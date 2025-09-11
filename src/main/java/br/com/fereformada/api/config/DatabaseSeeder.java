@@ -65,66 +65,71 @@ public class DatabaseSeeder implements CommandLineRunner {
         workRepository.deleteAll();
         topicRepository.deleteAll();
         authorRepository.deleteAll();
-        // ------------------------------------
-
-        // O if se torna desnecessário, mas podemos mantê-lo por segurança
-        // if (workRepository.count() > 0) {
-        //     logger.info("Banco de dados já populado. Nenhuma ação necessária.");
-        //     return;
-        // }
-
         logger.info("Iniciando a carga de dados completa via Seeder...");
 
-        // Passo 1: Criar os dados de base PRIMEIRO
-        Topic sovereigntyTopic = createTopic("Soberania de Deus", "A doutrina do controle e autoridade suprema de Deus sobre toda a criação.");
-        Topic decreesTopic = createTopic("Decretos de Deus", "Os decretos eternos de Deus pelos quais Ele preordenou tudo o que acontece.");
-        Author westminsterAssembly = createAuthor("Assembleia de Westminster", "Puritanos", "1643-01-01", "1653-01-01");
-        createAuthor("João Calvino", "Reforma", "1509-07-10", "1564-05-27");
+        // Passo 1: Criar/garantir que os dados de base existam
+        Topic sovereigntyTopic = createTopic("Soberania de Deus", "...");
+        Topic decreesTopic = createTopic("Decretos de Deus", "...");
+        // --- ADICIONE OS NOVOS TÓPICOS AQUI ---
+        Topic justificationTopic = createTopic("Justificação pela Fé", "A doutrina de como o pecador é declarado justo diante de Deus.");
+        Topic lawOfGodTopic = createTopic("A Lei de Deus", "Os mandamentos e estatutos divinos revelados nas Escrituras.");
+        Topic scripturesTopic = createTopic("Sagradas Escrituras", "A doutrina sobre a revelação de Deus na Bíblia.");
 
-        // Passo 2: Agora, carregar a obra que depende dos dados acima
-        List<Topic> availableTopics = List.of(sovereigntyTopic, decreesTopic);
-        loadWestminsterConfession(westminsterAssembly, availableTopics);
+        Author westminsterAssembly = createAuthor("Assembleia de Westminster", "Puritanos", "1643-01-01", "1653-01-01");
+
+        // Adicione os novos tópicos à lista que será passada aos métodos de carga
+        List<Topic> allTopics = List.of(sovereigntyTopic, decreesTopic, justificationTopic, lawOfGodTopic, scripturesTopic);
+
+        // Passo 2: Carregar os documentos
+        loadWestminsterConfession(westminsterAssembly, allTopics);
+        loadWestminsterCatechism(westminsterAssembly, allTopics);
 
         logger.info("Carga de dados finalizada com sucesso.");
     }
 
     private void loadWestminsterConfession(Author author, List<Topic> availableTopics) throws IOException {
-        logger.info("Carregando a Confissão de Fé de Westminster...");
+        final String WORK_TITLE = "Confissão de Fé de Westminster";
+        if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
+            logger.info("'{}' já está no banco. Pulando.", WORK_TITLE);
+            return;
+        }
+
+        logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
         Work confession = new Work();
-        confession.setTitle("Confissão de Fé de Westminster");
+        confession.setTitle(WORK_TITLE);
         confession.setAuthor(author);
         confession.setPublicationYear(1646);
         confession.setType("CONFISSAO");
         workRepository.save(confession);
 
-        String filePath = "classpath:data-content/pdf/confissao_westminster.pdf"; // Verifique se o nome do arquivo está correto
+        String filePath = "classpath:data-content/pdf/confissao_westminster.pdf";
         String rawText = extractTextFromPdf(filePath);
 
-        // Regex final e robusta, baseada no seu documento
-        String westminsterRegex = "(CAPÍTULO \\d+:.*)";
-        List<String> rawChunks = chunkingService.chunkByStructure(rawText, westminsterRegex);
+        // Regex para capturar o NÚMERO (grupo 1) e o TÍTULO (grupo 2) do capítulo
+        String westminsterRegex = "CAPÍTULO (\\d+):\\s*(.*)";
 
-        logger.info("Encontrados {} chunks estruturados no documento.", rawChunks.size());
+        // O serviço agora retorna uma lista de chunks já catalogados por seção
+        List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseChaptersAndSections(rawText, westminsterRegex);
 
-        for (String rawChunk : rawChunks) {
-            // Limpeza feita AQUI, em cada chunk individualmente
-            // 1. Remove quebras de linha no meio das frases
-            String cleanedChunk = rawChunk.replaceAll("(?<!\n)\r?\n(?!\n)", " ");
-            // 2. Remove números de página que estão sozinhos em uma linha
-            cleanedChunk = cleanedChunk.replaceAll("(?m)^\\s*\\d+\\s*$", "");
-            // 3. Normaliza espaços múltiplos
-            cleanedChunk = cleanedChunk.replaceAll(" +", " ").trim();
+        logger.info("Encontrados e catalogados {} chunks (seções) no documento.", parsedChunks.size());
 
-            if (cleanedChunk.isBlank() || cleanedChunk.length() < 50) continue;
+        for (ChunkingService.ParsedChunk parsedChunk : parsedChunks) {
+            String cleanedContent = cleanChunkText(parsedChunk.content());
+
+            if (cleanedContent.isBlank() || cleanedContent.length() < 20) continue;
 
             ContentChunk chunk = new ContentChunk();
-            chunk.setContent(cleanedChunk);
+            // Salvando os dados ricos e catalogados
+            chunk.setContent(cleanedContent);
+            chunk.setChapterNumber(parsedChunk.chapterNumber());
+            chunk.setChapterTitle(parsedChunk.chapterTitle());
+            chunk.setSectionNumber(parsedChunk.sectionNumber());
             chunk.setWork(confession);
 
             // Lógica de etiquetagem (tagging)
             Set<Topic> topicsForChunk = new HashSet<>();
-            if (cleanedChunk.toLowerCase().contains("decreto de deus") || cleanedChunk.toLowerCase().contains("predestinou")) {
+            if (cleanedContent.toLowerCase().contains("decreto de deus") || cleanedContent.toLowerCase().contains("predestinou")) {
                 availableTopics.stream()
                         .filter(t -> t.getName().equals("Soberania de Deus"))
                         .findFirst()
@@ -141,8 +146,9 @@ public class DatabaseSeeder implements CommandLineRunner {
 
             contentChunkRepository.save(chunk);
         }
-        logger.info("Confissão de Fé de Westminster carregada e salva no banco.");
+        logger.info("'{}' carregada e salva no banco.", WORK_TITLE);
     }
+
 
     // Métodos utilitários para criar as entidades de forma segura
     private Topic createTopic(String name, String description) {
@@ -182,9 +188,78 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
     }
 
-    private String cleanExtractedText(String rawText) {
-        String cleanedText = rawText.replaceAll("(?<!\n)\r?\n(?!\n)", " ");
-        cleanedText = cleanedText.replaceAll(" +", " ");
-        return cleanedText;
+    private String cleanChunkText(String rawChunkContent) {
+        String cleaned = rawChunkContent.replaceAll("(?m)^\\s*\\d+\\s*$", "");
+        cleaned = cleaned.replaceAll("(?<!\n)\r?\n(?!\n)", " ");
+        return cleaned.replaceAll(" +", " ").trim();
+    }
+
+    private void loadWestminsterCatechism(Author author, List<Topic> availableTopics) throws IOException {
+        final String WORK_TITLE = "Catecismo Maior de Westminster";
+        if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
+            logger.info("'{}' já está no banco. Pulando.", WORK_TITLE);
+            return;
+        }
+
+        logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
+
+        Work catechism = new Work();
+        catechism.setTitle(WORK_TITLE);
+        catechism.setAuthor(author);
+        catechism.setPublicationYear(1648);
+        catechism.setType("CATECISMO");
+        workRepository.save(catechism);
+
+        String filePath = "classpath:data-content/pdf/catecismo_maior_westminster.pdf";
+        String rawText = extractTextFromPdf(filePath);
+
+        // Regex para capturar o NÚMERO (grupo 1) e a PERGUNTA (grupo 2)
+        String questionRegex = "^\\s*(\\d+)\\.\\s*(.*?)\\?";
+
+        List<ChunkingService.ParsedQuestionChunk> parsedChunks = chunkingService.parseQuestionsAndAnswers(rawText, questionRegex);
+
+        logger.info("Encontrados e catalogados {} chunks (perguntas/respostas) no documento.", parsedChunks.size());
+
+        for (var parsedChunk : parsedChunks) {
+            String cleanedAnswer = cleanChunkText(parsedChunk.answer());
+            if (cleanedAnswer.isBlank() || cleanedAnswer.length() < 10) continue;
+
+            ContentChunk chunk = new ContentChunk();
+            chunk.setQuestion(parsedChunk.question());
+            chunk.setContent(cleanedAnswer);
+            chunk.setSectionNumber(parsedChunk.questionNumber());
+            chunk.setChapterTitle("Catecismo Maior");
+            chunk.setWork(catechism);
+
+            // --- LÓGICA DE ETIQUETAGEM (TAGGING) BASEADA NA PERGUNTA ---
+            Set<Topic> topicsForChunk = new HashSet<>();
+            String questionText = parsedChunk.question().toLowerCase();
+
+            if (questionText.contains("palavra de deus") || questionText.contains("escrituras")) {
+                findTopic("Sagradas Escrituras", availableTopics).ifPresent(topicsForChunk::add);
+            }
+            if (questionText.contains("justificação")) {
+                findTopic("Justificação pela Fé", availableTopics).ifPresent(topicsForChunk::add);
+            }
+            if (questionText.contains("lei de deus") || questionText.contains("mandamentos")) {
+                findTopic("A Lei de Deus", availableTopics).ifPresent(topicsForChunk::add);
+            }
+            // ... adicione mais regras 'if' aqui conforme necessário ...
+
+            if (!topicsForChunk.isEmpty()) {
+                chunk.setTopics(topicsForChunk);
+            }
+            // --- FIM DA LÓGICA DE ETIQUETAGEM ---
+
+            contentChunkRepository.save(chunk);
+        }
+        logger.info("'{}' carregado e salvo no banco.", WORK_TITLE);
+    }
+
+    // Adicione este método utilitário dentro da classe DatabaseSeeder
+    private java.util.Optional<Topic> findTopic(String name, List<Topic> topics) {
+        return topics.stream()
+                .filter(t -> t.getName().equals(name))
+                .findFirst();
     }
 }
