@@ -16,64 +16,68 @@ public class TaggingService {
     public void initializeRules(List<Topic> allTopics) {
         taggingRules.clear();
 
-        // Regra para "Sagradas Escrituras" (Capítulo 1 da CFW, Perguntas 2-4 do CM)
         findTopic("Sagradas Escrituras", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("escrituras", "palavra de deus", "cânon", "testamento", "inspiração", "regra de fé"))
+                taggingRules.put(topic, List.of("escrituras", "palavra de deus", "cânon", "testamento"))
         );
-
-        // Regra para "Deus e a Santíssima Trindade" (Capítulo 2 da CFW)
         findTopic("Deus e a Santíssima Trindade", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("trindade", "um só deus", "pai, o filho e o espírito santo", "três pessoas", "atributos de deus"))
+                taggingRules.put(topic, List.of("deus e da santíssima trindade", "um só deus", "três pessoas"))
         );
-
-        // Regra para "Decretos de Deus" (Capítulo 3 da CFW)
         findTopic("Decretos de Deus", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("decreto de deus", "predestinação", "eleição", "preordenou", "escolheu em cristo"))
+                taggingRules.put(topic, List.of("decretos de deus"))
         );
-
-        // Regra para "Criação" (Capítulo 4 da CFW)
         findTopic("Criação", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("criação", "criar o mundo", "criou o homem", "imagem de deus"))
+                taggingRules.put(topic, List.of("da criação"))
         );
-
-        // Regra para "Providência" (Capítulo 5 da CFW)
         findTopic("Providência", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("providência", "governa todas as criaturas", "sustenta", "dirige"))
+                taggingRules.put(topic, List.of("da providência"))
         );
-
-        // Regra para "A Queda e o Pecado" (Capítulo 6 da CFW)
         findTopic("A Queda e o Pecado", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("queda do homem", "pecado", "corrupção", "transgressão", "culpa", "natureza corrompida"))
+                taggingRules.put(topic, List.of("queda do homem", "do pecado", "corrupção de nossa natureza"))
         );
-
-        // Regra para "Pacto de Deus" (Capítulo 7 da CFW)
         findTopic("Pacto de Deus", allTopics).ifPresent(topic ->
                 taggingRules.put(topic, List.of("pacto de deus", "pacto de obras", "pacto da graça"))
         );
-
-        // Regra para "Cristo, o Mediador" (Capítulo 8 da CFW)
         findTopic("Cristo, o Mediador", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("cristo, o mediador", "jesus", "filho de deus", "redenção", "sacrifício", "duas naturezas"))
+                taggingRules.put(topic, List.of("cristo, o mediador", "operação secreta do espirito"))
         );
-
-        // Regra para "Livre-Arbítrio" (Capítulo 9 da CFW)
-        findTopic("Livre-Arbítrio", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("livre-arbítrio", "vontade do homem"))
+        findTopic("Fé", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("da fé", "fé salvadora"))
         );
-
-        // Regra para "Vocação Eficaz" (Capítulo 10 da CFW)
-        findTopic("Vocação Eficaz", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("vocação eficaz", "chamar eficazmente", "chamados"))
+        findTopic("Regeneração e Arrependimento", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("regenerados mediante a fé", "arrependimento", "penitência"))
         );
-
-        // Regra para "Justificação pela Fé" (Capítulo 11 da CFW)
+        findTopic("Vida Cristã", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("vida do homem cristão", "renúncia pessoal", "tomar a cruz", "meditação da vida futura", "uso da presente vida"))
+        );
         findTopic("Justificação pela Fé", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("justificação", "justifica", "fé salvadora", "imputando", "obediência de cristo"))
+                taggingRules.put(topic, List.of("justificação pela fé", "méritos das obras", "promessas da lei e do evangelho"))
         );
-
-        // Regra para "A Lei de Deus" (Capítulo 19 da CFW)
+        findTopic("Oração", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("da oração", "oração do senhor"))
+        );
+        findTopic("Eleição e Predestinação", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("eleição", "predestinação", "reprovação"))
+        );
+        findTopic("Ressurreição Final", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("ressurreição final", "juízo final", "estado do homem depois da morte"))
+        );
+        findTopic("A Igreja", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("da igreja", "comunhão dos santos", "censuras eclesiásticas", "sínodos e concílios"))
+        );
+        findTopic("Sacramentos", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("sacramentos", "batismo", "ceia do senhor", "indulgências", "purgatório"))
+        );
+        findTopic("Liberdade Cristã", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("liberdade cristã", "poder eclesiástico", "administração política", "magistrado civil"))
+        );
+        findTopic("Livre-Arbítrio", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("do livre-arbítrio"))
+        );
+        findTopic("Vocação Eficaz", allTopics).ifPresent(topic ->
+                taggingRules.put(topic, List.of("da vocação eficaz", "adoção"))
+        );
         findTopic("A Lei de Deus", allTopics).ifPresent(topic ->
-                taggingRules.put(topic, List.of("lei de deus", "mandamentos", "dez mandamentos", "lei moral"))
+                taggingRules.put(topic, List.of("da lei", "explanação do decálogo"))
         );
     }
 

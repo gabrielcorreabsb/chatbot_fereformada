@@ -3,6 +3,7 @@ package br.com.fereformada.api.model;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+
 import java.util.HashSet;
 import java.util.Set;
 
@@ -17,19 +18,19 @@ public class ContentChunk {
     private Long id;
 
     @Column(nullable = false, columnDefinition = "TEXT")
-    private String content; // A Resposta do catecismo virá aqui
+    private String content;
 
-    // --- NOVO CAMPO PARA O CATECISMO ---
     @Column(columnDefinition = "TEXT")
-    private String question; // A Pergunta do catecismo virá aqui
-    // ------------------------------------
+    private String question;
 
+    // --- CAMPOS DE CATALOGAÇÃO APRIMORADOS ---
     @Column(length = 255)
     private String chapterTitle;
 
     private Integer chapterNumber;
 
-    private Integer sectionNumber; // Usaremos este campo para o número da pergunta
+    private Integer sectionNumber;
+    // ------------------------------------
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "work_id", nullable = false)

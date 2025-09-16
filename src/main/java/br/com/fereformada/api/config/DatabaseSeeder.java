@@ -89,26 +89,25 @@ public class DatabaseSeeder implements CommandLineRunner {
         taggingService.initializeRules(allTopics);
 
         Author westminsterAssembly = createAuthor("Assembleia de Westminster", "Puritanos", "1643-01-01", "1653-01-01");
+        Author calvin = createAuthor("João Calvino", "Reforma", "1509-07-10", "1564-05-27");
+
 
         loadWestminsterConfession(westminsterAssembly, allTopics);
         loadWestminsterCatechism(westminsterAssembly, allTopics);
         loadShorterCatechism(westminsterAssembly, allTopics);
+        loadCalvinInstitutes(calvin, allTopics);
 
         logger.info("Carga de dados finalizada com sucesso.");
     }
 
     private void loadWestminsterConfession(Author author, List<Topic> availableTopics) throws IOException {
         final String WORK_TITLE = "Confissão de Fé de Westminster";
-        if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
-            return;
-        }
+        if (workRepository.findByTitle(WORK_TITLE).isPresent()) { return; }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
-
         Work confession = createWork(WORK_TITLE, author, 1646, "CONFISSAO");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/confissao_westminster.pdf");
 
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseWestminsterConfession(rawText);
-
         logger.info("Encontrados e catalogados {} chunks (seções) na Confissão.", parsedChunks.size());
 
         for (var parsedChunk : parsedChunks) {
@@ -125,7 +124,6 @@ public class DatabaseSeeder implements CommandLineRunner {
             contentChunkRepository.save(chunk);
         }
     }
-
     private void loadWestminsterCatechism(Author author, List<Topic> availableTopics) throws IOException {
         final String WORK_TITLE = "Catecismo Maior de Westminster";
         if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
@@ -184,7 +182,41 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
     }
 
-    // --- MÉTODO DE APOIO QUE FALTAVA ---
+    private void loadCalvinInstitutes(Author author, List<Topic> availableTopics) throws IOException {
+        final String WORK_TITLE = "Institutas da Religião Cristã";
+        if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
+            logger.info("'{}' já está no banco. Pulando.", WORK_TITLE);
+            return;
+        }
+
+        logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
+
+        Work institutes = createWork(WORK_TITLE, author, 1536, "LIVRO");
+        String rawText = extractTextFromPdf("classpath:data-content/pdf/Institutas da Religiao Crista - Joao Calvino.pdf");
+
+        // A chamada agora é para o método novo e específico, sem passar regex
+        List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseCalvinInstitutes(rawText);
+
+        logger.info("Encontrados e catalogados {} chunks (seções) nas Institutas.", parsedChunks.size());
+
+        for (var parsedChunk : parsedChunks) {
+            String cleanedContent = cleanChunkText(parsedChunk.content());
+            if (cleanedContent.isBlank() || cleanedContent.length() < 100) continue;
+
+            ContentChunk chunk = new ContentChunk();
+            chunk.setChapterNumber(parsedChunk.chapterNumber());
+            chunk.setChapterTitle(parsedChunk.chapterTitle());
+            chunk.setSectionNumber(parsedChunk.sectionNumber());
+            chunk.setContent(cleanedContent);
+            chunk.setWork(institutes);
+
+            chunk.setTopics(taggingService.getTagsFor(parsedChunk.chapterTitle(), cleanedContent));
+
+            contentChunkRepository.save(chunk);
+        }
+        logger.info("'{}' carregado e salvo no banco.", WORK_TITLE);
+    }
+
     private Work createWork(String title, Author author, int year, String type) {
         Work work = new Work();
         work.setTitle(title);
@@ -193,7 +225,6 @@ public class DatabaseSeeder implements CommandLineRunner {
         work.setType(type);
         return workRepository.save(work);
     }
-    // ------------------------------------
 
     private Topic createTopic(String name, String description) {
         return topicRepository.findByName(name)
