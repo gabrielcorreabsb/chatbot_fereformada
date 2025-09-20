@@ -23,14 +23,14 @@ public class ContentChunk {
     @Column(columnDefinition = "TEXT")
     private String question;
 
+    @Column(columnDefinition = "TEXT")
+    private String sectionTitle;
+
     // --- CAMPOS DE CATALOGAÇÃO APRIMORADOS ---
-    @Column(length = 255)
+    @Column(columnDefinition = "TEXT")
     private String chapterTitle;
 
     private Integer chapterNumber;
-
-    @Column(length = 255) // <-- NOVA COLUNA
-    private String subheading;
 
     private Integer sectionNumber;
     // ------------------------------------

@@ -25,9 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.LocalDate;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 @Component
 public class DatabaseSeeder implements CommandLineRunner {
@@ -105,7 +103,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         if (workRepository.findByTitle(WORK_TITLE).isPresent()) { return; }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
         Work confession = createWork(WORK_TITLE, author, 1646, "CONFISSAO");
-        String rawText = extractTextFromPdf("classpath:data-content/pdf/confissao_westminster.pdf");
+        String rawText = extractTextFromPdf("classpath:data-content/pdf/confissao_westminster.pdf", 3, 21);
 
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseWestminsterConfession(rawText);
         logger.info("Encontrados e catalogados {} chunks (seções) na Confissão.", parsedChunks.size());
@@ -192,7 +190,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
         Work institutes = createWork(WORK_TITLE, author, 1536, "LIVRO");
-        String rawText = extractTextFromPdf("classpath:data-content/pdf/Institutas da Religiao Crista - Joao Calvino.pdf");
+        String rawText = extractTextFromPdf("classpath:data-content/pdf/Institutas da Religiao Crista - Joao Calvino.pdf", 36, 367);
 
         // A chamada agora é para o método novo e específico, sem passar regex
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseCalvinInstitutes(rawText);
@@ -206,11 +204,17 @@ public class DatabaseSeeder implements CommandLineRunner {
             ContentChunk chunk = new ContentChunk();
             chunk.setChapterNumber(parsedChunk.chapterNumber());
             chunk.setChapterTitle(parsedChunk.chapterTitle());
+
+            // AQUI ESTÁ A NOVIDADE: salvando o título da seção
+            chunk.setSectionTitle(parsedChunk.sectionTitle());
+
             chunk.setSectionNumber(parsedChunk.sectionNumber());
             chunk.setContent(cleanedContent);
             chunk.setWork(institutes);
 
-            chunk.setTopics(taggingService.getTagsFor(parsedChunk.chapterTitle(), cleanedContent));
+            // A lógica de tagging agora pode usar o título da seção para ser mais precisa!
+            String taggingInput = parsedChunk.chapterTitle() + " " + (parsedChunk.sectionTitle() != null ? parsedChunk.sectionTitle() : "") + " " + cleanedContent;
+            chunk.setTopics(taggingService.getTagsFor(taggingInput, "")); // Ajuste conforme sua lógica de tagging
 
             contentChunkRepository.save(chunk);
         }
@@ -266,5 +270,17 @@ public class DatabaseSeeder implements CommandLineRunner {
         String cleaned = rawChunkContent.replaceAll("(?m)^\\s*\\d+\\s*$", "");
         cleaned = cleaned.replaceAll("(?<!\n)\r?\n(?!\n)", " ");
         return cleaned.replaceAll(" +", " ").trim();
+    }
+
+    private String extractTextFromPdf(String resourcePath, int startPage, int endPage) throws IOException {
+        logger.info("Extraindo texto de: {} (páginas {} a {})", resourcePath, startPage, endPage);
+        Resource resource = resourceLoader.getResource(resourcePath);
+        try (InputStream is = resource.getInputStream();
+             PDDocument document = Loader.loadPDF(is.readAllBytes())) {
+            PDFTextStripper pdfStripper = new PDFTextStripper();
+            pdfStripper.setStartPage(startPage);
+            pdfStripper.setEndPage(endPage);
+            return pdfStripper.getText(document);
+        }
     }
 }
