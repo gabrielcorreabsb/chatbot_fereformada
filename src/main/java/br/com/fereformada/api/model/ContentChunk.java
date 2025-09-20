@@ -29,6 +29,9 @@ public class ContentChunk {
 
     private Integer chapterNumber;
 
+    @Column(length = 255) // <-- NOVA COLUNA
+    private String subheading;
+
     private Integer sectionNumber;
     // ------------------------------------
 
