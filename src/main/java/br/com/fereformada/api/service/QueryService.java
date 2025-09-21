@@ -3,14 +3,16 @@ package br.com.fereformada.api.service;
 import br.com.fereformada.api.dto.QueryResponse;
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
+import br.com.fereformada.api.model.Work;
 import br.com.fereformada.api.repository.ContentChunkRepository;
+import br.com.fereformada.api.repository.TopicRepository;
+import br.com.fereformada.api.repository.WorkRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -18,51 +20,106 @@ public class QueryService {
 
     private static final Logger logger = LoggerFactory.getLogger(QueryService.class);
     private final ContentChunkRepository contentChunkRepository;
-    private final TaggingService taggingService;
-    private final GeminiApiClient geminiApiClient; // <-- NOVA DEPENDÊNCIA
+    private final TopicRepository topicRepository;
+    private final WorkRepository workRepository; // <-- NOVA DEPENDÊNCIA
+    private final GeminiApiClient geminiApiClient;
 
-    public QueryService(ContentChunkRepository contentChunkRepository, TaggingService taggingService,
-                        GeminiApiClient geminiApiClient) { // <-- ADICIONAR AO CONSTRUTOR
+    public QueryService(ContentChunkRepository contentChunkRepository,
+                        TopicRepository topicRepository,
+                        WorkRepository workRepository, // <-- ADICIONAR AO CONSTRUTOR
+                        GeminiApiClient geminiApiClient) {
         this.contentChunkRepository = contentChunkRepository;
-        this.taggingService = taggingService;
-        this.geminiApiClient = geminiApiClient; // <-- NOVA ATRIBUIÇÃO
+        this.topicRepository = topicRepository;
+        this.workRepository = workRepository; // <-- ADICIONAR ATRIBUIÇÃO
+        this.geminiApiClient = geminiApiClient;
     }
 
     public QueryResponse query(String userQuestion) {
-        // ... (Passo 1 e 2: Lógica de busca de tópicos e chunks - sem alterações) ...
-        Set<Topic> topics = taggingService.getTagsFor(userQuestion);
-        if (topics.isEmpty()) {
-            return new QueryResponse("Desculpe, não encontrei informações sobre este tópico.", Collections.emptyList());
+        logger.info("Nova pergunta recebida: '{}'", userQuestion);
+
+        // --- ETAPA 1: BUSCA HÍBRIDA ---
+        Set<ContentChunk> combinedResults = new LinkedHashSet<>(); // Usa LinkedHashSet para manter a ordem e evitar duplicatas
+
+        // 1a: Busca por Tópicos (a que já tínhamos)
+        Set<Topic> topics = findTopicsUsingAi(userQuestion);
+        if (!topics.isEmpty()) {
+            logger.info("Tópicos identificados pela IA: {}", topics.stream().map(Topic::getName).collect(Collectors.joining(", ")));
+            List<Work> allWorks = workRepository.findAll();
+            for (Work work : allWorks) {
+                List<ContentChunk> chunksFromWork = contentChunkRepository.findTopByTopicsAndWorkTitle(
+                        topics, work.getTitle(), PageRequest.of(0, 2));
+                combinedResults.addAll(chunksFromWork);
+            }
         }
-        System.out.println("Tópicos encontrados: " + topics.stream().map(Topic::getName).collect(Collectors.joining(", ")));
-        String workFilter = extractWorkFilter(userQuestion);
-        List<ContentChunk> relevantChunks = contentChunkRepository.findRelevantChunks(topics, workFilter);
-        if (relevantChunks.isEmpty() && !workFilter.isEmpty()) {
-            logger.warn("Nenhum chunk encontrado com o filtro '{}'. Tentando busca geral.", workFilter);
-            relevantChunks = contentChunkRepository.findFirst5ByTopicsIn(topics);
+
+        // 1b: Busca por Palavra-Chave Direta
+        String cleanedQuestion = userQuestion.replaceAll("[^a-zA-Z0-9áéíóúâêôãõç\\s]", "").toLowerCase();
+        // Pega as palavras mais significativas (evita "o", "a", "de")
+        String[] keywords = Arrays.stream(cleanedQuestion.split("\\s+"))
+                .filter(word -> word.length() > 3)
+                .toArray(String[]::new);
+
+        for (String keyword : keywords) {
+            logger.info("Buscando por palavra-chave direta: '{}'", keyword);
+            combinedResults.addAll(contentChunkRepository.findByContentContainingIgnoreCase(keyword, PageRequest.of(0, 2)));
         }
-        if (relevantChunks.isEmpty()) {
-            return new QueryResponse("Não consegui localizar um contexto específico para responder.", Collections.emptyList());
+
+        if (combinedResults.isEmpty()) {
+            return new QueryResponse("Não consegui localizar um contexto relevante para responder.", Collections.emptyList());
         }
 
         // Limita o número de chunks para não sobrecarregar a IA
-        List<ContentChunk> limitedChunks = relevantChunks.stream().limit(5).toList();
+        List<ContentChunk> limitedChunks = combinedResults.stream().limit(7).toList();
 
-        // Passo 3: Montar o prompt
+        // --- ETAPA 2: GERAR RESPOSTA (com o prompt aprimorado) ---
         String prompt = buildPrompt(userQuestion, limitedChunks);
-        System.out.println("\n--- PROMPT ENVIADO PARA A IA ---\n" + prompt);
-
-        // --- PASSO 4: CHAMAR A IA E RETORNAR A RESPOSTA REAL ---
+        logger.debug("Prompt enviado para a IA:\n{}", prompt);
         String aiAnswer = geminiApiClient.generateContent(prompt);
-
-        List<String> sources = limitedChunks.stream()
-                .map(this::formatChunkSource)
-                .toList();
+        List<String> sources = limitedChunks.stream().map(this::formatChunkSource).toList();
 
         return new QueryResponse(aiAnswer, sources);
     }
 
-    // Método auxiliar com filtros mais específicos
+    private Set<Topic> findTopicsUsingAi(String userQuestion) {
+        // 1. Busca todos os tópicos disponíveis no seu banco de dados.
+        List<Topic> allTopics = topicRepository.findAll();
+        String availableTopics = allTopics.stream()
+                .map(Topic::getName)
+                .collect(Collectors.joining(", "));
+
+        // 2. Monta um prompt específico para a tarefa de classificação.
+        String classificationPrompt = String.format("""
+                Você é um classificador de texto especialista em teologia reformada.
+                Sua tarefa é analisar a pergunta do usuário e identificar qual dos seguintes tópicos teológicos é o mais relevante.
+                Responda APENAS com o nome exato de um ou mais tópicos da lista, separados por vírgula. Não adicione nenhuma outra palavra ou explicação.
+                
+                Lista de Tópicos Disponíveis:
+                [%s]
+                
+                Pergunta do Usuário:
+                "%s"
+                
+                Tópicos Relevantes:
+                """, availableTopics, userQuestion);
+
+        // 3. Chama a IA.
+        String response = geminiApiClient.generateContent(classificationPrompt).trim();
+        logger.info("Resposta da IA para classificação de tópicos: '{}'", response);
+
+        // 4. Processa a resposta da IA para encontrar os objetos Topic correspondentes.
+        if (response.isBlank() || response.toLowerCase().contains("não sei")) {
+            return Collections.emptySet();
+        }
+
+        Set<String> topicNamesFromAi = Arrays.stream(response.split(","))
+                .map(String::trim)
+                .collect(Collectors.toSet());
+
+        return allTopics.stream()
+                .filter(topic -> topicNamesFromAi.contains(topic.getName()))
+                .collect(Collectors.toSet());
+    }
+
     private String extractWorkFilter(String question) {
         String lowerCaseQuestion = question.toLowerCase();
         if (lowerCaseQuestion.contains("confissão")) return "Confissão de Fé";
@@ -74,23 +131,30 @@ public class QueryService {
 
     private String buildPrompt(String question, List<ContentChunk> chunks) {
         StringBuilder context = new StringBuilder();
-        context.append("Contexto:\n");
+        context.append("Contexto Fornecido:\n");
         for (ContentChunk chunk : chunks) {
             context.append("- Fonte: ").append(formatChunkSource(chunk));
-            if (chunk.getQuestion() != null) context.append("\n  Pergunta: ").append(chunk.getQuestion());
-            context.append("\n  Texto: ").append(chunk.getContent()).append("\n\n");
+            if (chunk.getQuestion() != null) context.append("\n  Pergunta da Fonte: ").append(chunk.getQuestion());
+            context.append("\n  Texto da Fonte: ").append(chunk.getContent()).append("\n\n");
         }
 
+        // **** PROMPT NOVO E MAIS INTELIGENTE ****
         return String.format("""
-                Você é um assistente teológico especialista na Fé Reformada.
-                Responda à pergunta do usuário baseando-se EXCLUSIVAMENTE no contexto fornecido.
-                Seja claro, direto e, se possível, cite a fonte mencionada no contexto.
+            Você é um assistente teológico especialista na Fé Reformada, com um tom professoral, claro e didático.
+            Sua principal tarefa é responder à pergunta do usuário baseando-se PRIMARIAMENTE no "Contexto Fornecido".
 
-                %s
-                Pergunta do Usuário:
-                %s
-                """, context.toString(), question);
+            Siga estas regras:
+            1. SEMPRE priorize a informação encontrada no "Contexto Fornecido". Cite as fontes.
+            2. Se o contexto não contiver a resposta para uma pergunta factual simples (como "Qual o primeiro mandamento?" ou "Quem foi o autor das Institutas?"), você PODE usar seu conhecimento geral para responder.
+            3. Ao usar seu conhecimento geral, deixe claro que a informação não veio das fontes catalogadas. Por exemplo, comece com "Embora não encontrado diretamente nas fontes fornecidas, o primeiro mandamento é...".
+            4. Sempre finalize com um parágrafo de resumo conciso.
+
+            %s
+            Pergunta do Usuário:
+            %s
+            """, context.toString(), question);
     }
+
 
     // Método de formatação de fonte para consistência
     private String formatChunkSource(ContentChunk chunk) {
@@ -103,4 +167,5 @@ public class QueryService {
             return String.format("%s - Cap. %d, Seção %d", chunk.getWork().getTitle(), chunk.getChapterNumber(), chunk.getSectionNumber());
         }
     }
+
 }
