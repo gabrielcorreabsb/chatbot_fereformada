@@ -1,11 +1,19 @@
 package br.com.fereformada.api.service;
 
 import br.com.fereformada.api.model.Topic;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Service
 public class TaggingService {
+
+    private static final Logger logger = LoggerFactory.getLogger(TaggingService.class);
 
     private final Map<Topic, List<String>> taggingRules = new HashMap<>();
 
@@ -82,26 +90,59 @@ public class TaggingService {
     }
 
     /**
-     * Aplica as regras de etiquetagem a um ou mais textos.
-     * @param texts Os textos a serem analisados (ex: pergunta, resposta).
-     * @return Um Set com os Tópicos correspondentes.
+     * Aplica uma lógica de pontuação para encontrar os tópicos mais relevantes.
+     * @param texts Os textos a serem analisados (ex: título do capítulo, conteúdo da seção).
+     * @return Um Set com os Tópicos que passaram no critério de relevância.
      */
     public Set<Topic> getTagsFor(String... texts) {
-        Set<Topic> foundTopics = new HashSet<>();
-        String combinedText = String.join(" ", texts).toLowerCase();
+        String combinedText = Arrays.stream(texts)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining(" "))
+                .toLowerCase();
 
         if (combinedText.isBlank()) {
-            return foundTopics;
+            return new HashSet<>();
         }
 
+        Map<Topic, Integer> topicScores = new HashMap<>();
         for (Map.Entry<Topic, List<String>> rule : taggingRules.entrySet()) {
+            Topic currentTopic = rule.getKey();
+            int score = 0;
             for (String keyword : rule.getValue()) {
-                if (combinedText.contains(keyword)) {
-                    foundTopics.add(rule.getKey());
-                    break; // Vai para a próxima regra assim que encontra uma palavra-chave
+                Pattern pattern = Pattern.compile("\\b" + Pattern.quote(keyword) + "\\b");
+                Matcher matcher = pattern.matcher(combinedText);
+                if (matcher.find()) {
+                    score++;
                 }
             }
+            if (score > 0) {
+                topicScores.put(currentTopic, score);
+            }
         }
+
+        if (topicScores.isEmpty()) {
+            return new HashSet<>();
+        }
+
+        // Logs alterados para DEBUG. Ficarão ocultos por padrão.
+        logger.debug("--- Tagging Scores for Chunk ---");
+        logger.debug("Text Snippet: '{}...'", combinedText.substring(0, Math.min(combinedText.length(), 100)));
+        topicScores.entrySet().stream()
+                .sorted(Map.Entry.<Topic, Integer>comparingByValue().reversed())
+                .forEach(entry -> logger.debug("  - Topic: '{}', Score: {}", entry.getKey().getName(), entry.getValue()));
+        logger.debug("------------------------------");
+
+        int maxScore = Collections.max(topicScores.values());
+        double scoreThreshold = maxScore * 0.1;
+        int absoluteMinimumKeywords = 1;
+
+        Set<Topic> foundTopics = topicScores.entrySet().stream()
+                .filter(entry -> entry.getValue() >= scoreThreshold && entry.getValue() >= absoluteMinimumKeywords)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toSet());
+
+        logger.debug("Topics Applied: {}", foundTopics.stream().map(Topic::getName).collect(Collectors.toList()));
+
         return foundTopics;
     }
 
