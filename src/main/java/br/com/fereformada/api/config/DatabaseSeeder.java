@@ -11,6 +11,7 @@ import br.com.fereformada.api.repository.TopicRepository;
 import br.com.fereformada.api.repository.WorkRepository;
 import br.com.fereformada.api.service.ChunkingService;
 import br.com.fereformada.api.service.TaggingService;
+import com.pgvector.PGvector;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -21,6 +22,8 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import br.com.fereformada.api.service.GeminiApiClient;
+
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -39,11 +42,13 @@ public class DatabaseSeeder implements CommandLineRunner {
     private final ResourceLoader resourceLoader;
     private final ChunkingService chunkingService;
     private final TaggingService taggingService;
+    private final GeminiApiClient geminiApiClient;
+
 
     public DatabaseSeeder(AuthorRepository authorRepository, WorkRepository workRepository,
                           TopicRepository topicRepository, ContentChunkRepository contentChunkRepository,
                           ResourceLoader resourceLoader, ChunkingService chunkingService,
-                          TaggingService taggingService) {
+                          TaggingService taggingService, GeminiApiClient geminiApiClient) {
         this.authorRepository = authorRepository;
         this.workRepository = workRepository;
         this.topicRepository = topicRepository;
@@ -51,6 +56,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         this.resourceLoader = resourceLoader;
         this.chunkingService = chunkingService;
         this.taggingService = taggingService;
+        this.geminiApiClient = geminiApiClient;
     }
 
     @Override
@@ -118,6 +124,12 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setSectionNumber(parsedChunk.sectionNumber());
             chunk.setContent(cleanedContent);
             chunk.setWork(confession);
+            // 1. Gera o embedding para o conteúdo limpo.
+            PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
+            // 2. Salva o vetor no chunk.
+            chunk.setContentVector(vector);
+            // **************************
+
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.chapterTitle(), cleanedContent));
             contentChunkRepository.save(chunk);
         }
@@ -146,8 +158,15 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setSectionNumber(parsedChunk.questionNumber());
             chunk.setChapterTitle("Catecismo Maior");
             chunk.setWork(catechism);
+            // Gera o embedding para a combinação da pergunta e resposta.
+            String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
+            PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
+            chunk.setContentVector(vector);
+            // **************************
+
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.question(), cleanedAnswer));
             contentChunkRepository.save(chunk);
+
         }
     }
 
@@ -175,8 +194,15 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setSectionNumber(parsedChunk.questionNumber());
             chunk.setChapterTitle("Breve Catecismo");
             chunk.setWork(catechism);
+            // Gera o embedding para a combinação da pergunta e resposta.
+            String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
+            PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
+            chunk.setContentVector(vector);
+            // **************************
+
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.question(), cleanedAnswer));
             contentChunkRepository.save(chunk);
+
         }
     }
 
@@ -212,9 +238,13 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setContent(cleanedContent);
             chunk.setWork(institutes);
 
-            // A lógica de tagging agora pode usar o título da seção para ser mais precisa!
+            // Gera o embedding para o conteúdo da seção.
+            PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
+            chunk.setContentVector(vector);
+            // **************************
+
             String taggingInput = parsedChunk.chapterTitle() + " " + (parsedChunk.sectionTitle() != null ? parsedChunk.sectionTitle() : "") + " " + cleanedContent;
-            chunk.setTopics(taggingService.getTagsFor(taggingInput, "")); // Ajuste conforme sua lógica de tagging
+            chunk.setTopics(taggingService.getTagsFor(taggingInput, ""));
 
             contentChunkRepository.save(chunk);
         }

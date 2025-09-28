@@ -1,43 +1,58 @@
 package br.com.fereformada.api.service;
 
-import com.google.cloud.vertexai.VertexAI;
-import com.google.cloud.vertexai.api.GenerateContentResponse;
-import com.google.cloud.vertexai.generativeai.GenerativeModel;
-import com.google.cloud.vertexai.generativeai.ResponseHandler;
+import com.pgvector.PGvector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
+import java.util.List;
 
 @Service
 public class GeminiApiClient {
 
     private static final Logger logger = LoggerFactory.getLogger(GeminiApiClient.class);
 
-    private final String projectId;
-    private final String location = "us-central1";
-    private final String modelName = "gemini-2.5-flash"; // Usando o modelo Gemini 1.5 Pro
+    private final ChatModel chatModel;
+    private final EmbeddingModel embeddingModel;
 
-    public GeminiApiClient(@Value("${google.project.id}") String projectId) {
-        this.projectId = projectId;
+    @Autowired
+    public GeminiApiClient(ChatModel chatModel, EmbeddingModel embeddingModel) {
+        this.chatModel = chatModel;
+        this.embeddingModel = embeddingModel;
     }
 
     public String generateContent(String prompt) {
-        logger.info("Enviando prompt para o modelo {}...", modelName);
-        try (VertexAI vertexAI = new VertexAI(projectId, location)) {
-
-            GenerativeModel model = new GenerativeModel(modelName, vertexAI);
-            GenerateContentResponse response = model.generateContent(prompt);
-            String textResponse = ResponseHandler.getText(response);
-            logger.info("Resposta recebida da IA.");
-            return textResponse;
-
-        } catch (IOException e) {
-            logger.error("Erro ao chamar a API do Gemini: {}", e.getMessage());
-            e.printStackTrace();
-            return "Ocorreu um erro ao tentar gerar a resposta. Verifique as credenciais e a conexão.";
+        logger.info("Enviando prompt para o modelo generativo: '{}...'", prompt.substring(0, Math.min(prompt.length(), 100)));
+        try {
+            return chatModel.call(new Prompt(prompt)).getResult().getOutput().getContent();
+        } catch (Exception e) {
+            logger.error("Erro ao chamar a API para gerar conteúdo.", e);
+            return "Ocorreu um erro ao tentar gerar a resposta.";
         }
     }
+
+    public PGvector generateEmbedding(String text) {
+        if (text == null || text.trim().length() < 10) {
+            return null;
+        }
+
+        logger.debug("Gerando embedding para o texto: '{}...'", text.substring(0, Math.min(text.length(), 100)));
+        try {
+            // O método embed retorna diretamente float[]
+            float[] embeddingArray = embeddingModel.embed(text);
+
+            // O PGvector aceita diretamente float[]
+            return new PGvector(embeddingArray);
+
+        } catch (Exception e) {
+            logger.error("Erro ao chamar a API para gerar embedding para o texto: '{}...'", text.substring(0, Math.min(text.length(), 100)), e);
+            return null;
+        }
+    }
+
 }

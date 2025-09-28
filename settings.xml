@@ -1,0 +1,5 @@
+<mirror>
+    <id>my-mirror</id>
+    <mirrorOf>*,!spring-snapshots,!central-portal-snapshots</mirrorOf>
+    <url>https://my-company-repository.com/maven</url>
+</mirror>

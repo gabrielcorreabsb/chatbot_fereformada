@@ -1,5 +1,6 @@
 package br.com.fereformada.api.model;
 
+import com.pgvector.PGvector;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -26,14 +27,17 @@ public class ContentChunk {
     @Column(columnDefinition = "TEXT")
     private String sectionTitle;
 
-    // --- CAMPOS DE CATALOGAÇÃO APRIMORADOS ---
     @Column(columnDefinition = "TEXT")
     private String chapterTitle;
 
     private Integer chapterNumber;
 
     private Integer sectionNumber;
-    // ------------------------------------
+
+    // **** CAMPO DE VETOR CORRIGIDO E MODERNO ****
+    @Column(name = "content_vector", columnDefinition = "vector(768)")
+    private PGvector contentVector; // <-- TIPO DE DADO CORRETO
+    // ********************************************
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "work_id", nullable = false)
