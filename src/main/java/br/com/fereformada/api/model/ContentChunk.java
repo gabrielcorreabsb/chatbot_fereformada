@@ -52,4 +52,7 @@ public class ContentChunk {
             inverseJoinColumns = @JoinColumn(name = "topic_id")
     )
     private Set<Topic> topics = new HashSet<>();
+
+
 }
+

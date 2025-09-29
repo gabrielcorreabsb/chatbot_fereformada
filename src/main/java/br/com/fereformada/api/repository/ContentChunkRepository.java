@@ -24,4 +24,9 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
 
     // **** NOVO MÉTODO PARA BUSCA POR PALAVRA-CHAVE ****
     List<ContentChunk> findByContentContainingIgnoreCase(String keyword, Pageable pageable);
+
+    // Método para contar chunks por título da obra
+    @Query("SELECT COUNT(c) FROM ContentChunk c JOIN c.work w WHERE w.title = :workTitle")
+    long countByWorkTitle(@Param("workTitle") String workTitle);
+
 }

@@ -24,7 +24,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import br.com.fereformada.api.service.GeminiApiClient;
 
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.LocalDate;
@@ -44,7 +43,6 @@ public class DatabaseSeeder implements CommandLineRunner {
     private final TaggingService taggingService;
     private final GeminiApiClient geminiApiClient;
 
-
     public DatabaseSeeder(AuthorRepository authorRepository, WorkRepository workRepository,
                           TopicRepository topicRepository, ContentChunkRepository contentChunkRepository,
                           ResourceLoader resourceLoader, ChunkingService chunkingService,
@@ -62,51 +60,165 @@ public class DatabaseSeeder implements CommandLineRunner {
     @Override
     @Transactional
     public void run(String... args) throws Exception {
-        logger.info("Limpando o banco de dados para uma nova carga...");
-        contentChunkRepository.deleteAll();
-        workRepository.deleteAll();
-        topicRepository.deleteAll();
-        authorRepository.deleteAll();
+        logger.info("🔍 Verificando status do banco de dados...");
 
-        logger.info("Iniciando a carga de dados completa via Seeder...");
+        // Verificar o que já existe
+        DatabaseStatus status = checkDatabaseStatus();
+        logDatabaseStatus(status);
 
-        // --- DEFINIÇÃO DE TÓPICOS ---
-        Topic scripturesTopic = createTopic("Sagradas Escrituras", "A doutrina sobre a revelação de Deus na Bíblia.");
-        Topic godAndTrinityTopic = createTopic("Deus e a Santíssima Trindade", "A doutrina sobre o ser, os atributos de Deus e a Trindade.");
-        Topic decreesTopic = createTopic("Decretos de Deus", "A doutrina sobre os decretos eternos de Deus, incluindo a predestinação.");
-        Topic creationTopic = createTopic("Criação", "A doutrina sobre a criação do mundo e do homem por Deus.");
-        Topic providenceTopic = createTopic("Providência", "A doutrina sobre o sustento e governo de Deus sobre todas as coisas.");
-        Topic fallAndSinTopic = createTopic("A Queda e o Pecado", "A doutrina sobre a queda do homem, o pecado original e atual.");
-        Topic covenantTopic = createTopic("Pacto de Deus", "A doutrina sobre os pactos de Deus com o homem (obras e graça).");
-        Topic christMediatorTopic = createTopic("Cristo, o Mediador", "A doutrina sobre a pessoa e a obra de Jesus Cristo como mediador.");
-        Topic freeWillTopic = createTopic("Livre-Arbítrio", "A doutrina sobre a vontade do homem em seus diferentes estados (inocência, pecado, graça, glória).");
-        Topic effectualCallingTopic = createTopic("Vocação Eficaz", "A doutrina sobre o chamado eficaz de Deus aos eleitos.");
-        Topic justificationTopic = createTopic("Justificação pela Fé", "A doutrina de como o pecador é declarado justo diante de Deus.");
-        Topic lawOfGodTopic = createTopic("A Lei de Deus", "Os mandamentos e estatutos divinos revelados nas Escrituras.");
+        if (status.isComplete()) {
+            logger.info("✅ Todos os dados já estão carregados. Nada a fazer.");
+            return;
+        }
 
-        List<Topic> allTopics = List.of(
-                scripturesTopic, godAndTrinityTopic, decreesTopic, creationTopic, providenceTopic,
-                fallAndSinTopic, covenantTopic, christMediatorTopic, freeWillTopic,
-                effectualCallingTopic, justificationTopic, lawOfGodTopic
+        logger.info("📦 Carregando dados faltantes...");
+
+        // Garantir que tópicos e autores existem
+        ensureTopicsAndAuthorsExist();
+
+        // Carregar apenas o que está faltando
+        loadMissingData(status);
+
+        logger.info("🎉 Carga de dados finalizada com sucesso!");
+    }
+
+    private DatabaseStatus checkDatabaseStatus() {
+        DatabaseStatus status = new DatabaseStatus();
+
+        // Verificar obras existentes
+        status.hasConfession = workRepository.findByTitle("Confissão de Fé de Westminster").isPresent();
+        status.hasLargerCatechism = workRepository.findByTitle("Catecismo Maior de Westminster").isPresent();
+        status.hasShorterCatechism = workRepository.findByTitle("Breve Catecismo de Westminster").isPresent();
+        status.hasInstitutes = workRepository.findByTitle("Institutas da Religião Cristã").isPresent();
+
+        // Contar chunks por obra
+        if (status.hasConfession) {
+            status.confessionChunks = contentChunkRepository.countByWorkTitle("Confissão de Fé de Westminster");
+        }
+        if (status.hasLargerCatechism) {
+            status.largerCatechismChunks = contentChunkRepository.countByWorkTitle("Catecismo Maior de Westminster");
+        }
+        if (status.hasShorterCatechism) {
+            status.shorterCatechismChunks = contentChunkRepository.countByWorkTitle("Breve Catecismo de Westminster");
+        }
+        if (status.hasInstitutes) {
+            status.institutesChunks = contentChunkRepository.countByWorkTitle("Institutas da Religião Cristã");
+        }
+
+        return status;
+    }
+
+    private void logDatabaseStatus(DatabaseStatus status) {
+        logger.info("📊 Status atual do banco:");
+        logger.info("  • Confissão de Westminster: {} (chunks: {})",
+                status.hasConfession ? "✅" : "❌", status.confessionChunks);
+        logger.info("  • Catecismo Maior: {} (chunks: {})",
+                status.hasLargerCatechism ? "✅" : "❌", status.largerCatechismChunks);
+        logger.info("  • Breve Catecismo: {} (chunks: {})",
+                status.hasShorterCatechism ? "✅" : "❌", status.shorterCatechismChunks);
+        logger.info("  • Institutas: {} (chunks: {})",
+                status.hasInstitutes ? "✅" : "❌", status.institutesChunks);
+    }
+
+    private void ensureTopicsAndAuthorsExist() {
+        // Só cria se não existirem
+        if (topicRepository.count() == 0) {
+            logger.info("📝 Criando tópicos...");
+            createAllTopics();
+        }
+
+        if (authorRepository.count() == 0) {
+            logger.info("👥 Criando autores...");
+            createAllAuthors();
+        }
+    }
+
+    private void createAllTopics() {
+        List<Topic> topics = List.of(
+                createTopic("Sagradas Escrituras", "A doutrina sobre a revelação de Deus na Bíblia."),
+                createTopic("Deus e a Santíssima Trindade", "A doutrina sobre o ser, os atributos de Deus e a Trindade."),
+                createTopic("Decretos de Deus", "A doutrina sobre os decretos eternos de Deus, incluindo a predestinação."),
+                createTopic("Criação", "A doutrina sobre a criação do mundo e do homem por Deus."),
+                createTopic("Providência", "A doutrina sobre o sustento e governo de Deus sobre todas as coisas."),
+                createTopic("A Queda e o Pecado", "A doutrina sobre a queda do homem, o pecado original e atual."),
+                createTopic("Pacto de Deus", "A doutrina sobre os pactos de Deus com o homem (obras e graça)."),
+                createTopic("Cristo, o Mediador", "A doutrina sobre a pessoa e a obra de Jesus Cristo como mediador."),
+                createTopic("Livre-Arbítrio", "A doutrina sobre a vontade do homem em seus diferentes estados (inocência, pecado, graça, glória)."),
+                createTopic("Vocação Eficaz", "A doutrina sobre o chamado eficaz de Deus aos eleitos."),
+                createTopic("Justificação pela Fé", "A doutrina de como o pecador é declarado justo diante de Deus."),
+                createTopic("A Lei de Deus", "Os mandamentos e estatutos divinos revelados nas Escrituras.")
         );
 
-        taggingService.initializeRules(allTopics);
+        // Inicializar as regras de tagging com os tópicos criados
+        taggingService.initializeRules(topics);
 
-        Author westminsterAssembly = createAuthor("Assembleia de Westminster", "Puritanos", "1643-01-01", "1653-01-01");
+        logger.info("✅ {} tópicos criados com sucesso!", topics.size());
+    }
+
+    private void createAllAuthors() {
+        Author westminster = createAuthor("Assembleia de Westminster", "Puritanos", "1643-01-01", "1653-01-01");
         Author calvin = createAuthor("João Calvino", "Reforma", "1509-07-10", "1564-05-27");
 
+        logger.info("✅ Autores criados: {} e {}", westminster.getName(), calvin.getName());
+    }
 
-        loadWestminsterConfession(westminsterAssembly, allTopics);
-        loadWestminsterCatechism(westminsterAssembly, allTopics);
-        loadShorterCatechism(westminsterAssembly, allTopics);
-        loadCalvinInstitutes(calvin, allTopics);
+    private void loadMissingData(DatabaseStatus status) throws IOException {
+        List<Topic> allTopics = topicRepository.findAll();
+        Author westminsterAssembly = authorRepository.findByName("Assembleia de Westminster").orElseThrow();
+        Author calvin = authorRepository.findByName("João Calvino").orElseThrow();
 
-        logger.info("Carga de dados finalizada com sucesso.");
+        // Carregar apenas o que está faltando
+        if (!status.hasConfession) {
+            logger.info("🔄 Carregando Confissão de Westminster...");
+            loadWestminsterConfession(westminsterAssembly, allTopics);
+        } else {
+            logger.info("⏭️ Confissão já carregada, pulando...");
+        }
+
+        if (!status.hasLargerCatechism) {
+            logger.info("🔄 Carregando Catecismo Maior...");
+            loadWestminsterCatechism(westminsterAssembly, allTopics);
+        } else {
+            logger.info("⏭️ Catecismo Maior já carregado, pulando...");
+        }
+
+        if (!status.hasShorterCatechism) {
+            logger.info("🔄 Carregando Breve Catecismo...");
+            loadShorterCatechism(westminsterAssembly, allTopics);
+        } else {
+            logger.info("⏭️ Breve Catecismo já carregado, pulando...");
+        }
+
+        if (!status.hasInstitutes) {
+            logger.info("🔄 Carregando Institutas...");
+            loadCalvinInstitutes(calvin, allTopics);
+        } else {
+            logger.info("⏭️ Institutas já carregadas, pulando...");
+        }
+    }
+
+    // Classe auxiliar para status
+    private static class DatabaseStatus {
+        boolean hasConfession = false;
+        boolean hasLargerCatechism = false;
+        boolean hasShorterCatechism = false;
+        boolean hasInstitutes = false;
+
+        long confessionChunks = 0;
+        long largerCatechismChunks = 0;
+        long shorterCatechismChunks = 0;
+        long institutesChunks = 0;
+
+        boolean isComplete() {
+            return hasConfession && hasLargerCatechism && hasShorterCatechism && hasInstitutes;
+        }
     }
 
     private void loadWestminsterConfession(Author author, List<Topic> availableTopics) throws IOException {
         final String WORK_TITLE = "Confissão de Fé de Westminster";
-        if (workRepository.findByTitle(WORK_TITLE).isPresent()) { return; }
+        if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
+            return;
+        }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
         Work confession = createWork(WORK_TITLE, author, 1646, "CONFISSAO");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/confissao_westminster.pdf", 3, 21);
@@ -114,7 +226,15 @@ public class DatabaseSeeder implements CommandLineRunner {
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseWestminsterConfession(rawText);
         logger.info("Encontrados e catalogados {} chunks (seções) na Confissão.", parsedChunks.size());
 
+        int totalChunks = parsedChunks.size();
+        int processedChunks = 0;
+
         for (var parsedChunk : parsedChunks) {
+            processedChunks++;
+            logger.info("Processando chunk {}/{}: Capítulo {} - Seção {}",
+                    processedChunks, totalChunks,
+                    parsedChunk.chapterNumber(), parsedChunk.sectionNumber());
+
             String cleanedContent = cleanChunkText(parsedChunk.content());
             if (cleanedContent.isBlank() || cleanedContent.length() < 20) continue;
 
@@ -124,13 +244,31 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setSectionNumber(parsedChunk.sectionNumber());
             chunk.setContent(cleanedContent);
             chunk.setWork(confession);
-            PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
-            chunk.setContentVector(convertPGvectorToFloatArray(vector));
+
+            // Gera o embedding
+            try {
+                PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
+                chunk.setContentVector(convertPGvectorToFloatArray(vector));
+                logger.debug("Embedding gerado com sucesso para chunk {}/{}", processedChunks, totalChunks);
+            } catch (Exception e) {
+                logger.error("Erro ao gerar embedding para chunk {}/{}: {}", processedChunks, totalChunks, e.getMessage());
+                // Continue sem o embedding se houver erro
+            }
 
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.chapterTitle(), cleanedContent));
             contentChunkRepository.save(chunk);
+
+            // Log a cada 10 chunks processados
+            if (processedChunks % 10 == 0) {
+                logger.info("Progresso: {}/{} chunks processados ({}%)",
+                        processedChunks, totalChunks,
+                        Math.round((processedChunks * 100.0) / totalChunks));
+            }
         }
+
+        logger.info("Confissão de Westminster carregada com sucesso! Total: {} chunks", processedChunks);
     }
+
     private void loadWestminsterCatechism(Author author, List<Topic> availableTopics) throws IOException {
         final String WORK_TITLE = "Catecismo Maior de Westminster";
         if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
@@ -142,10 +280,17 @@ public class DatabaseSeeder implements CommandLineRunner {
         String rawText = extractTextFromPdf("classpath:data-content/pdf/catecismo_maior_westminster.pdf");
 
         List<ChunkingService.ParsedQuestionChunk> parsedChunks = chunkingService.parseWestminsterLargerCatechism(rawText);
-
         logger.info("Encontrados e catalogados {} chunks no Catecismo Maior.", parsedChunks.size());
 
+        int totalChunks = parsedChunks.size();
+        int processedChunks = 0;
+
         for (var parsedChunk : parsedChunks) {
+            processedChunks++;
+            logger.info("Processando pergunta {}/{}: {}",
+                    processedChunks, totalChunks,
+                    parsedChunk.question().substring(0, Math.min(50, parsedChunk.question().length())));
+
             String cleanedAnswer = cleanChunkText(parsedChunk.answer());
             if (cleanedAnswer.isBlank() || cleanedAnswer.length() < 10) continue;
 
@@ -155,16 +300,30 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setSectionNumber(parsedChunk.questionNumber());
             chunk.setChapterTitle("Catecismo Maior");
             chunk.setWork(catechism);
+
             // Gera o embedding para a combinação da pergunta e resposta.
-            String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
-            PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
-            chunk.setContentVector(convertPGvectorToFloatArray(vector));
-            // **************************
+            try {
+                String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
+                PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
+                chunk.setContentVector(convertPGvectorToFloatArray(vector));
+                logger.debug("Embedding gerado com sucesso para pergunta {}/{}", processedChunks, totalChunks);
+            } catch (Exception e) {
+                logger.error("Erro ao gerar embedding para pergunta {}/{}: {}", processedChunks, totalChunks, e.getMessage());
+                // Continue sem o embedding se houver erro
+            }
 
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.question(), cleanedAnswer));
             contentChunkRepository.save(chunk);
 
+            // Log a cada 10 chunks processados
+            if (processedChunks % 10 == 0) {
+                logger.info("Progresso Catecismo Maior: {}/{} chunks processados ({}%)",
+                        processedChunks, totalChunks,
+                        Math.round((processedChunks * 100.0) / totalChunks));
+            }
         }
+
+        logger.info("Catecismo Maior carregado com sucesso! Total: {} chunks", processedChunks);
     }
 
     private void loadShorterCatechism(Author author, List<Topic> availableTopics) throws IOException {
@@ -178,10 +337,17 @@ public class DatabaseSeeder implements CommandLineRunner {
         String rawText = extractTextFromPdf("classpath:data-content/pdf/breve_catecismo_westminster.pdf");
 
         List<ChunkingService.ParsedQuestionChunk> parsedChunks = chunkingService.parseWestminsterShorterCatechism(rawText);
-
         logger.info("Encontrados e catalogados {} chunks no Breve Catecismo.", parsedChunks.size());
 
+        int totalChunks = parsedChunks.size();
+        int processedChunks = 0;
+
         for (var parsedChunk : parsedChunks) {
+            processedChunks++;
+            logger.info("Processando pergunta {}/{}: {}",
+                    processedChunks, totalChunks,
+                    parsedChunk.question().substring(0, Math.min(50, parsedChunk.question().length())));
+
             String cleanedAnswer = cleanChunkText(parsedChunk.answer());
             if (cleanedAnswer.isBlank() || cleanedAnswer.length() < 10) continue;
 
@@ -191,16 +357,30 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setSectionNumber(parsedChunk.questionNumber());
             chunk.setChapterTitle("Breve Catecismo");
             chunk.setWork(catechism);
+
             // Gera o embedding para a combinação da pergunta e resposta.
-            String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
-            PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
-            chunk.setContentVector(convertPGvectorToFloatArray(vector));
-            // **************************
+            try {
+                String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
+                PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
+                chunk.setContentVector(convertPGvectorToFloatArray(vector));
+                logger.debug("Embedding gerado com sucesso para pergunta {}/{}", processedChunks, totalChunks);
+            } catch (Exception e) {
+                logger.error("Erro ao gerar embedding para pergunta {}/{}: {}", processedChunks, totalChunks, e.getMessage());
+                // Continue sem o embedding se houver erro
+            }
 
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.question(), cleanedAnswer));
             contentChunkRepository.save(chunk);
 
+            // Log a cada 10 chunks processados
+            if (processedChunks % 10 == 0) {
+                logger.info("Progresso Breve Catecismo: {}/{} chunks processados ({}%)",
+                        processedChunks, totalChunks,
+                        Math.round((processedChunks * 100.0) / totalChunks));
+            }
         }
+
+        logger.info("Breve Catecismo carregado com sucesso! Total: {} chunks", processedChunks);
     }
 
     private void loadCalvinInstitutes(Author author, List<Topic> availableTopics) throws IOException {
@@ -215,37 +395,57 @@ public class DatabaseSeeder implements CommandLineRunner {
         Work institutes = createWork(WORK_TITLE, author, 1536, "LIVRO");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/Institutas da Religiao Crista - Joao Calvino.pdf", 36, 367);
 
-        // A chamada agora é para o método novo e específico, sem passar regex
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseCalvinInstitutes(rawText);
-
         logger.info("Encontrados e catalogados {} chunks (seções) nas Institutas.", parsedChunks.size());
 
+        int totalChunks = parsedChunks.size();
+        int processedChunks = 0;
+
         for (var parsedChunk : parsedChunks) {
+            processedChunks++;
+            logger.info("Processando seção {}/{}: Livro {} - Cap. {} - Seção {}",
+                    processedChunks, totalChunks,
+                    parsedChunk.chapterNumber(),
+                    parsedChunk.chapterTitle() != null ? parsedChunk.chapterTitle().substring(0, Math.min(30, parsedChunk.chapterTitle().length())) : "N/A",
+                    parsedChunk.sectionNumber());
+
             String cleanedContent = cleanChunkText(parsedChunk.content());
             if (cleanedContent.isBlank() || cleanedContent.length() < 100) continue;
 
             ContentChunk chunk = new ContentChunk();
             chunk.setChapterNumber(parsedChunk.chapterNumber());
             chunk.setChapterTitle(parsedChunk.chapterTitle());
-
-            // AQUI ESTÁ A NOVIDADE: salvando o título da seção
             chunk.setSectionTitle(parsedChunk.sectionTitle());
-
             chunk.setSectionNumber(parsedChunk.sectionNumber());
             chunk.setContent(cleanedContent);
             chunk.setWork(institutes);
 
             // Gera o embedding para o conteúdo da seção.
-            PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
-            chunk.setContentVector(convertPGvectorToFloatArray(vector));
-            // **************************
+            try {
+                PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
+                chunk.setContentVector(convertPGvectorToFloatArray(vector));
+                logger.debug("Embedding gerado com sucesso para seção {}/{}", processedChunks, totalChunks);
+            } catch (Exception e) {
+                logger.error("Erro ao gerar embedding para seção {}/{}: {}", processedChunks, totalChunks, e.getMessage());
+                // Continue sem o embedding se houver erro
+            }
 
-            String taggingInput = parsedChunk.chapterTitle() + " " + (parsedChunk.sectionTitle() != null ? parsedChunk.sectionTitle() : "") + " " + cleanedContent;
+            String taggingInput = parsedChunk.chapterTitle() + " " +
+                    (parsedChunk.sectionTitle() != null ? parsedChunk.sectionTitle() : "") + " " +
+                    cleanedContent;
             chunk.setTopics(taggingService.getTagsFor(taggingInput, ""));
 
             contentChunkRepository.save(chunk);
+
+            // Log a cada 20 chunks processados (Institutas tem mais conteúdo)
+            if (processedChunks % 20 == 0) {
+                logger.info("Progresso Institutas: {}/{} chunks processados ({}%)",
+                        processedChunks, totalChunks,
+                        Math.round((processedChunks * 100.0) / totalChunks));
+            }
         }
-        logger.info("'{}' carregado e salvo no banco.", WORK_TITLE);
+
+        logger.info("'{}' carregado e salvo no banco. Total: {} chunks", WORK_TITLE, processedChunks);
     }
 
     private float[] convertPGvectorToFloatArray(PGvector pgVector) {
