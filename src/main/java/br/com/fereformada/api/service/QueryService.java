@@ -7,6 +7,7 @@ import br.com.fereformada.api.model.Work;
 import br.com.fereformada.api.repository.ContentChunkRepository;
 import br.com.fereformada.api.repository.TopicRepository;
 import br.com.fereformada.api.repository.WorkRepository;
+import com.pgvector.PGvector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
@@ -21,29 +22,35 @@ public class QueryService {
     private static final Logger logger = LoggerFactory.getLogger(QueryService.class);
     private final ContentChunkRepository contentChunkRepository;
     private final TopicRepository topicRepository;
-    private final WorkRepository workRepository; // <-- NOVA DEPENDÊNCIA
+    private final WorkRepository workRepository;
     private final GeminiApiClient geminiApiClient;
 
     public QueryService(ContentChunkRepository contentChunkRepository,
                         TopicRepository topicRepository,
-                        WorkRepository workRepository, // <-- ADICIONAR AO CONSTRUTOR
+                        WorkRepository workRepository,
                         GeminiApiClient geminiApiClient) {
         this.contentChunkRepository = contentChunkRepository;
         this.topicRepository = topicRepository;
-        this.workRepository = workRepository; // <-- ADICIONAR ATRIBUIÇÃO
+        this.workRepository = workRepository;
         this.geminiApiClient = geminiApiClient;
     }
 
     public QueryResponse query(String userQuestion) {
         logger.info("Nova pergunta recebida: '{}'", userQuestion);
 
-        // --- ETAPA 1: BUSCA HÍBRIDA ---
-        Set<ContentChunk> combinedResults = new LinkedHashSet<>(); // Usa LinkedHashSet para manter a ordem e evitar duplicatas
+        Set<ContentChunk> combinedResults = new LinkedHashSet<>();
 
-        // 1a: Busca por Tópicos (a que já tínhamos)
+        // 1a: BUSCA VETORIAL (PRINCIPAL)
+        List<ContentChunk> vectorResults = performVectorSearch(userQuestion);
+        if (!vectorResults.isEmpty()) {
+            logger.info("🎯 Busca vetorial encontrou {} chunks relevantes", vectorResults.size());
+            combinedResults.addAll(vectorResults);
+        }
+
+        // 1b: Busca por Tópicos (complementar)
         Set<Topic> topics = findTopicsUsingAi(userQuestion);
         if (!topics.isEmpty()) {
-            logger.info("Tópicos identificados pela IA: {}", topics.stream().map(Topic::getName).collect(Collectors.joining(", ")));
+            logger.info("📚 Tópicos identificados pela IA: {}", topics.stream().map(Topic::getName).collect(Collectors.joining(", ")));
             List<Work> allWorks = workRepository.findAll();
             for (Work work : allWorks) {
                 List<ContentChunk> chunksFromWork = contentChunkRepository.findTopByTopicsAndWorkTitle(
@@ -52,26 +59,19 @@ public class QueryService {
             }
         }
 
-        // 1b: Busca por Palavra-Chave Direta
-        String cleanedQuestion = userQuestion.replaceAll("[^a-zA-Z0-9áéíóúâêôãõç\\s]", "").toLowerCase();
-        // Pega as palavras mais significativas (evita "o", "a", "de")
-        String[] keywords = Arrays.stream(cleanedQuestion.split("\\s+"))
-                .filter(word -> word.length() > 3)
-                .toArray(String[]::new);
-
-        for (String keyword : keywords) {
-            logger.info("Buscando por palavra-chave direta: '{}'", keyword);
-            combinedResults.addAll(contentChunkRepository.findByContentContainingIgnoreCase(keyword, PageRequest.of(0, 2)));
+        // 1c: Busca por Palavra-Chave (fallback)
+        if (combinedResults.size() < 3) {
+            List<ContentChunk> keywordResults = performKeywordSearch(userQuestion);
+            combinedResults.addAll(keywordResults);
+            logger.info("🔍 Busca por palavra-chave adicionou {} chunks", keywordResults.size());
         }
 
         if (combinedResults.isEmpty()) {
             return new QueryResponse("Não consegui localizar um contexto relevante para responder.", Collections.emptyList());
         }
 
-        // Limita o número de chunks para não sobrecarregar a IA
-        List<ContentChunk> limitedChunks = combinedResults.stream().limit(7).toList();
+        List<ContentChunk> limitedChunks = combinedResults.stream().limit(5).toList();
 
-        // --- ETAPA 2: GERAR RESPOSTA (com o prompt aprimorado) ---
         String prompt = buildPrompt(userQuestion, limitedChunks);
         logger.debug("Prompt enviado para a IA:\n{}", prompt);
         String aiAnswer = geminiApiClient.generateContent(prompt);
@@ -80,14 +80,101 @@ public class QueryService {
         return new QueryResponse(aiAnswer, sources);
     }
 
+    /**
+     * BUSCA VETORIAL USANDO QUERY RAW
+     */
+    private List<ContentChunk> performVectorSearch(String userQuestion) {
+        try {
+            logger.info("🔍 Realizando busca vetorial para: '{}'", userQuestion);
+
+            // 1. Gerar embedding da pergunta
+            PGvector questionVector = geminiApiClient.generateEmbedding(userQuestion);
+            if (questionVector == null) {
+                logger.warn("⚠️ Não foi possível gerar embedding para a pergunta");
+                return Collections.emptyList();
+            }
+
+            // 2. Buscar usando query raw
+            List<Object[]> rawResults = contentChunkRepository.findSimilarChunksRaw(
+                    questionVector.toString(), 5
+            );
+
+            // 3. Converter resultados raw para ContentChunk
+            List<ContentChunk> chunks = convertRawResultsToChunks(rawResults);
+
+            logger.info("✅ Busca vetorial retornou {} chunks", chunks.size());
+            return chunks;
+
+        } catch (Exception e) {
+            logger.error("❌ Erro na busca vetorial: {}", e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Converte resultados raw da query nativa para objetos ContentChunk
+     */
+    private List<ContentChunk> convertRawResultsToChunks(List<Object[]> rawResults) {
+        List<ContentChunk> chunks = new ArrayList<>();
+
+        for (Object[] row : rawResults) {
+            try {
+                ContentChunk chunk = new ContentChunk();
+
+                // Mapear campos da query: id, content, question, section_title, chapter_title, chapter_number, section_number, work_id, similarity_score
+                chunk.setId(((Number) row[0]).longValue());
+                chunk.setContent((String) row[1]);
+                chunk.setQuestion((String) row[2]);
+                chunk.setSectionTitle((String) row[3]);
+                chunk.setChapterTitle((String) row[4]);
+                chunk.setChapterNumber(row[5] != null ? ((Number) row[5]).intValue() : null);
+                chunk.setSectionNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
+
+                // Buscar a obra
+                Long workId = ((Number) row[7]).longValue();
+                Work work = workRepository.findById(workId).orElse(null);
+                chunk.setWork(work);
+
+                // Similarity score está em row[8] se precisar usar
+
+                chunks.add(chunk);
+
+            } catch (Exception e) {
+                logger.warn("Erro ao converter resultado raw: {}", e.getMessage());
+            }
+        }
+
+        return chunks;
+    }
+
+    private List<ContentChunk> performKeywordSearch(String userQuestion) {
+        String cleanedQuestion = userQuestion.replaceAll("[^a-zA-Z0-9áéíóúâêôãõç\\s]", "").toLowerCase();
+        String[] keywords = Arrays.stream(cleanedQuestion.split("\\s+"))
+                .filter(word -> word.length() > 3)
+                .toArray(String[]::new);
+
+        Set<ContentChunk> keywordResults = new LinkedHashSet<>();
+        for (String keyword : keywords) {
+            logger.info("Buscando por palavra-chave direta: '{}'", keyword);
+            try {
+                List<ContentChunk> chunks = contentChunkRepository.findByContentContainingIgnoreCase(
+                        keyword, PageRequest.of(0, 2)
+                );
+                keywordResults.addAll(chunks);
+            } catch (Exception e) {
+                logger.warn("Erro na busca por palavra-chave '{}': {}", keyword, e.getMessage());
+            }
+        }
+
+        return new ArrayList<>(keywordResults);
+    }
+
     private Set<Topic> findTopicsUsingAi(String userQuestion) {
-        // 1. Busca todos os tópicos disponíveis no seu banco de dados.
         List<Topic> allTopics = topicRepository.findAll();
         String availableTopics = allTopics.stream()
                 .map(Topic::getName)
                 .collect(Collectors.joining(", "));
 
-        // 2. Monta um prompt específico para a tarefa de classificação.
         String classificationPrompt = String.format("""
                 Você é um classificador de texto especialista em teologia reformada.
                 Sua tarefa é analisar a pergunta do usuário e identificar qual dos seguintes tópicos teológicos é o mais relevante.
@@ -102,11 +189,9 @@ public class QueryService {
                 Tópicos Relevantes:
                 """, availableTopics, userQuestion);
 
-        // 3. Chama a IA.
         String response = geminiApiClient.generateContent(classificationPrompt).trim();
         logger.info("Resposta da IA para classificação de tópicos: '{}'", response);
 
-        // 4. Processa a resposta da IA para encontrar os objetos Topic correspondentes.
         if (response.isBlank() || response.toLowerCase().contains("não sei")) {
             return Collections.emptySet();
         }
@@ -120,15 +205,6 @@ public class QueryService {
                 .collect(Collectors.toSet());
     }
 
-    private String extractWorkFilter(String question) {
-        String lowerCaseQuestion = question.toLowerCase();
-        if (lowerCaseQuestion.contains("confissão")) return "Confissão de Fé";
-        if (lowerCaseQuestion.contains("institutas")) return "Institutas";
-        if (lowerCaseQuestion.contains("catecismo maior")) return "Catecismo Maior";
-        if (lowerCaseQuestion.contains("breve catecismo")) return "Breve Catecismo";
-        return ""; // Se não encontrar, a busca inicial será em todas as obras
-    }
-
     private String buildPrompt(String question, List<ContentChunk> chunks) {
         StringBuilder context = new StringBuilder();
         context.append("Contexto Fornecido:\n");
@@ -138,7 +214,6 @@ public class QueryService {
             context.append("\n  Texto da Fonte: ").append(chunk.getContent()).append("\n\n");
         }
 
-        // **** PROMPT NOVO E MAIS INTELIGENTE ****
         return String.format("""
             Você é um assistente teológico especialista na Fé Reformada, com um tom professoral, claro e didático.
             Sua principal tarefa é responder à pergunta do usuário baseando-se PRIMARIAMENTE no "Contexto Fornecido".
@@ -155,17 +230,11 @@ public class QueryService {
             """, context.toString(), question);
     }
 
-
-    // Método de formatação de fonte para consistência
     private String formatChunkSource(ContentChunk chunk) {
-        // Se a obra for um catecismo, use o número da pergunta
         if ("CATECISMO".equals(chunk.getWork().getType())) {
             return String.format("%s - Pergunta %d", chunk.getWork().getTitle(), chunk.getSectionNumber());
-        }
-        // Para outros tipos de obra, use capítulo e seção
-        else {
+        } else {
             return String.format("%s - Cap. %d, Seção %d", chunk.getWork().getTitle(), chunk.getChapterNumber(), chunk.getSectionNumber());
         }
     }
-
 }
