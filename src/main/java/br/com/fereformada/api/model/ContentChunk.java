@@ -4,9 +4,12 @@ import com.pgvector.PGvector;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.util.HashSet;
 import java.util.Set;
+
 
 @Entity
 @Table(name = "content_chunks")
@@ -34,10 +37,9 @@ public class ContentChunk {
 
     private Integer sectionNumber;
 
-    // **** CAMPO DE VETOR CORRIGIDO E MODERNO ****
+    // Use float[] ao invés de PGvector
     @Column(name = "content_vector", columnDefinition = "vector(768)")
-    private PGvector contentVector; // <-- TIPO DE DADO CORRETO
-    // ********************************************
+    private float[] contentVector;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "work_id", nullable = false)

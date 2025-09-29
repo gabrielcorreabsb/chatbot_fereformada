@@ -124,11 +124,8 @@ public class DatabaseSeeder implements CommandLineRunner {
             chunk.setSectionNumber(parsedChunk.sectionNumber());
             chunk.setContent(cleanedContent);
             chunk.setWork(confession);
-            // 1. Gera o embedding para o conteúdo limpo.
             PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
-            // 2. Salva o vetor no chunk.
-            chunk.setContentVector(vector);
-            // **************************
+            chunk.setContentVector(convertPGvectorToFloatArray(vector));
 
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.chapterTitle(), cleanedContent));
             contentChunkRepository.save(chunk);
@@ -161,7 +158,7 @@ public class DatabaseSeeder implements CommandLineRunner {
             // Gera o embedding para a combinação da pergunta e resposta.
             String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
             PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
-            chunk.setContentVector(vector);
+            chunk.setContentVector(convertPGvectorToFloatArray(vector));
             // **************************
 
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.question(), cleanedAnswer));
@@ -197,7 +194,7 @@ public class DatabaseSeeder implements CommandLineRunner {
             // Gera o embedding para a combinação da pergunta e resposta.
             String textToEmbed = parsedChunk.question() + "\n" + cleanedAnswer;
             PGvector vector = geminiApiClient.generateEmbedding(textToEmbed);
-            chunk.setContentVector(vector);
+            chunk.setContentVector(convertPGvectorToFloatArray(vector));
             // **************************
 
             chunk.setTopics(taggingService.getTagsFor(parsedChunk.question(), cleanedAnswer));
@@ -240,7 +237,7 @@ public class DatabaseSeeder implements CommandLineRunner {
 
             // Gera o embedding para o conteúdo da seção.
             PGvector vector = geminiApiClient.generateEmbedding(cleanedContent);
-            chunk.setContentVector(vector);
+            chunk.setContentVector(convertPGvectorToFloatArray(vector));
             // **************************
 
             String taggingInput = parsedChunk.chapterTitle() + " " + (parsedChunk.sectionTitle() != null ? parsedChunk.sectionTitle() : "") + " " + cleanedContent;
@@ -249,6 +246,33 @@ public class DatabaseSeeder implements CommandLineRunner {
             contentChunkRepository.save(chunk);
         }
         logger.info("'{}' carregado e salvo no banco.", WORK_TITLE);
+    }
+
+    private float[] convertPGvectorToFloatArray(PGvector pgVector) {
+        if (pgVector == null) {
+            return null;
+        }
+        try {
+            // Primeiro tenta toString() e parsing
+            String vectorString = pgVector.toString();
+
+            // Remove colchetes se existirem
+            if (vectorString.startsWith("[") && vectorString.endsWith("]")) {
+                vectorString = vectorString.substring(1, vectorString.length() - 1);
+            }
+
+            // Divide por vírgula e converte
+            String[] parts = vectorString.split(",");
+            float[] result = new float[parts.length];
+
+            for (int i = 0; i < parts.length; i++) {
+                result[i] = Float.parseFloat(parts[i].trim());
+            }
+
+            return result;
+        } catch (Exception e) {
+            throw new RuntimeException("Erro ao converter PGvector para float[]: " + e.getMessage(), e);
+        }
     }
 
     private Work createWork(String title, Author author, int year, String type) {
