@@ -5,10 +5,7 @@ import br.com.fereformada.api.model.Author;
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
 import br.com.fereformada.api.model.Work;
-import br.com.fereformada.api.repository.AuthorRepository;
-import br.com.fereformada.api.repository.ContentChunkRepository;
-import br.com.fereformada.api.repository.TopicRepository;
-import br.com.fereformada.api.repository.WorkRepository;
+import br.com.fereformada.api.repository.*;
 import br.com.fereformada.api.service.ChunkingService;
 import br.com.fereformada.api.service.TaggingService;
 import com.pgvector.PGvector;
@@ -23,11 +20,16 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import br.com.fereformada.api.service.GeminiApiClient;
+import br.com.fereformada.api.model.StudyNote;
+import br.com.fereformada.api.repository.StudyNoteRepository;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.time.LocalDate;
+import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class DatabaseSeeder implements CommandLineRunner {
@@ -42,11 +44,13 @@ public class DatabaseSeeder implements CommandLineRunner {
     private final ChunkingService chunkingService;
     private final TaggingService taggingService;
     private final GeminiApiClient geminiApiClient;
+    private final StudyNoteRepository studyNoteRepository; // <-- NOVO
+
 
     public DatabaseSeeder(AuthorRepository authorRepository, WorkRepository workRepository,
                           TopicRepository topicRepository, ContentChunkRepository contentChunkRepository,
                           ResourceLoader resourceLoader, ChunkingService chunkingService,
-                          TaggingService taggingService, GeminiApiClient geminiApiClient) {
+                          TaggingService taggingService, GeminiApiClient geminiApiClient, StudyNoteRepository studyNoteRepository) {
         this.authorRepository = authorRepository;
         this.workRepository = workRepository;
         this.topicRepository = topicRepository;
@@ -55,6 +59,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         this.chunkingService = chunkingService;
         this.taggingService = taggingService;
         this.geminiApiClient = geminiApiClient;
+        this.studyNoteRepository = studyNoteRepository;
     }
 
     @Override
@@ -90,6 +95,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         status.hasLargerCatechism = workRepository.findByTitle("Catecismo Maior de Westminster").isPresent();
         status.hasShorterCatechism = workRepository.findByTitle("Breve Catecismo de Westminster").isPresent();
         status.hasInstitutes = workRepository.findByTitle("Institutas da Religião Cristã").isPresent();
+        status.hasGenevaNotes = workRepository.findByTitle("Geneva Notes").isPresent();
 
         // Contar chunks por obra
         if (status.hasConfession) {
@@ -104,6 +110,8 @@ public class DatabaseSeeder implements CommandLineRunner {
         if (status.hasInstitutes) {
             status.institutesChunks = contentChunkRepository.countByWorkTitle("Institutas da Religião Cristã");
         }
+        status.genevaNotesCount = studyNoteRepository.countBySource("Bíblia de Genebra");
+        status.hasGenevaNotes = status.genevaNotesCount > 0;
 
         return status;
     }
@@ -118,6 +126,8 @@ public class DatabaseSeeder implements CommandLineRunner {
                 status.hasShorterCatechism ? "✅" : "❌", status.shorterCatechismChunks);
         logger.info("  • Institutas: {} (chunks: {})",
                 status.hasInstitutes ? "✅" : "❌", status.institutesChunks);
+        logger.info("  • Notas da Bíblia de Genebra: {} (notas: {})",
+                status.hasGenevaNotes ? "✅" : "❌", status.genevaNotesCount);
     }
 
     private void ensureTopicsAndAuthorsExist() {
@@ -195,6 +205,13 @@ public class DatabaseSeeder implements CommandLineRunner {
         } else {
             logger.info("⏭️ Institutas já carregadas, pulando...");
         }
+
+        if (!status.hasGenevaNotes) {
+            logger.info("🔄 Carregando Notas da Bíblia de Genebra...");
+            loadGenevaStudyNotes();
+        } else {
+            logger.info("⏭️ Notas da Bíblia de Genebra já carregadas, pulando...");
+        }
     }
 
     // Classe auxiliar para status
@@ -209,8 +226,11 @@ public class DatabaseSeeder implements CommandLineRunner {
         long shorterCatechismChunks = 0;
         long institutesChunks = 0;
 
+        boolean hasGenevaNotes = false;
+        long genevaNotesCount = 0;
+
         boolean isComplete() {
-            return hasConfession && hasLargerCatechism && hasShorterCatechism && hasInstitutes;
+            return hasConfession && hasLargerCatechism && hasShorterCatechism && hasInstitutes && hasGenevaNotes;
         }
     }
 
@@ -536,5 +556,170 @@ public class DatabaseSeeder implements CommandLineRunner {
             pdfStripper.setEndPage(endPage);
             return pdfStripper.getText(document);
         }
+    }
+
+    private void loadGenevaStudyNotes() throws IOException {
+        final String SOURCE_NAME = "Bíblia de Genebra";
+        logger.info("Verificando e carregando notas da '{}' livro por livro...", SOURCE_NAME);
+
+        // Lista dos nomes dos arquivos do Antigo Testamento
+        List<String> otBooks = List.of(
+                "Gênesis", "Êxodo", "Levítico", "Números", "Deuteronômio", "Josué", "Juízes", "Rute",
+                "1_Samuel", "2_Samuel", "1_Reis", "2_Reis", "1_Crônicas", "2_Crônicas", "Esdras", "Neemias", "Ester", "Jó",
+                "Salmos", "Provérbios", "Eclesiastes", "Cantares_de_salomão", "Isaías", "Jeremias",
+                "Lamentações_de_jeremias", "Ezequiel", "Daniel", "Oséias", "Joel", "Amós", "Obadias",
+                "Jonas", "Miquéias", "Naum", "Habacuque", "Sofonias", "Ageu", "Zacarias", "Malaquias"
+        );
+
+        // Lista dos nomes dos arquivos do Novo Testamento
+        List<String> ntBooks = List.of(
+                "Mateus", "Marcos", "Lucas", "João", "Atos", "Romanos", "1_Coríntios", "2_Coríntios",
+                "Gálatas", "Efésios", "Filipenses", "Colossenses", "1_Tessalonicenses", "2_Tessalonicenses",
+                "1_Timóteo", "2_Timóteo", "Tito", "Filemom", "Hebreus", "Tiago", "1_Pedro", "2_Pedro",
+                "1_João", "2_João", "3_João", "Judas", "Apocalipse"
+        );
+
+        int totalNotesLoaded = 0;
+        int booksSkipped = 0;
+        List<String> booksToProcess = new java.util.ArrayList<>();
+        booksToProcess.addAll(otBooks.stream().map(b -> "ot/" + b).toList());
+        booksToProcess.addAll(ntBooks.stream().map(b -> "nt/" + b).toList());
+
+        for (String bookPath : booksToProcess) {
+            String[] pathParts = bookPath.split("/");
+            String testament = pathParts[0];
+            String bookFileName = pathParts[1];
+            String bookName = bookFileName.replace('_', ' ');
+
+            // --- A LÓGICA PRINCIPAL ESTÁ AQUI ---
+            if (studyNoteRepository.countByBook(bookName) > 0) {
+                // Se já existem notas para este livro, pula para o próximo.
+                logger.info("⏭️ Notas para '{}' já existem no banco. Pulando.", bookName);
+                booksSkipped++;
+                continue;
+            }
+
+            // Se não existe, processa o arquivo.
+            String filePath = "classpath:data-content/bible-notes/" + testament + "/" + bookFileName + ".txt";
+            totalNotesLoaded += processStudyNoteFile(filePath, bookName, SOURCE_NAME);
+        }
+
+        logger.info("Carregamento das notas da Bíblia de Genebra finalizado. {} livros pulados, {} novas notas carregadas.", booksSkipped, totalNotesLoaded);
+    }
+
+    /**
+     * Processa um único arquivo de texto de notas, parseia e salva no banco.
+     * @return O número de notas processadas no arquivo.
+     */
+    private int processStudyNoteFile(String filePath, String bookName, String sourceName) {
+        logger.info("Processando notas para '{}' do arquivo {}...", bookName, filePath);
+
+        String rawText;
+        try {
+            rawText = extractTextFromTxt(filePath);
+        } catch (IOException e) {
+            logger.error("ERRO: Não foi possível ler o arquivo de notas em '{}'. Pulando este livro.", filePath);
+            return 0; // Retorna 0 notas processadas
+        }
+
+        // A primeira linha do arquivo é o título, o resto são as notas.
+        String[] lines = rawText.split("\n", 2);
+        String contentToParse = lines.length > 1 ? lines[1] : "";
+
+        // Usa a mesma lógica de split do Python: quebra o texto pelo marcador de nota "* "
+        String[] noteBlocks = contentToParse.split("\n\\*\\s+");
+        int processedCount = 0;
+
+        for (String block : noteBlocks) {
+            if (block.trim().isEmpty()) continue;
+
+            // Regex para capturar a referência (ex: "1.1-2.25") e o resto do conteúdo
+            Pattern pattern = Pattern.compile("^([\\d.:,-]+[\\w-]*)\\s+(.*)", Pattern.DOTALL);
+            Matcher matcher = pattern.matcher(block.trim());
+
+            if (matcher.find()) {
+                String reference = matcher.group(1);
+                String noteContent = matcher.group(2);
+
+                try {
+                    StudyNote note = new StudyNote();
+                    note.setSource(sourceName);
+                    note.setBook(bookName);
+                    note.setNoteContent(cleanChunkText(noteContent));
+
+                    int[] parsedRef = parseReference(reference);
+                    note.setStartChapter(parsedRef[0]);
+                    note.setStartVerse(parsedRef[1]);
+                    note.setEndChapter(parsedRef[2]);
+                    note.setEndVerse(parsedRef[3]);
+
+                    try {
+                        PGvector vector = geminiApiClient.generateEmbedding(note.getNoteContent());
+                        note.setNoteVector(convertPGvectorToFloatArray(vector));
+                    } catch (Exception e) {
+                        logger.warn("Não foi possível gerar embedding para a nota de {}:{}. Erro: {}", bookName, reference, e.getMessage());
+                    }
+
+                    studyNoteRepository.save(note);
+                    processedCount++;
+                } catch (Exception e) {
+                    logger.error("Falha ao processar bloco de nota para '{}'. Referência: '{}'. Erro: {}", bookName, reference, e.getMessage());
+                }
+            }
+        }
+        logger.info("✔ Sucesso! {} notas processadas para {}.", processedCount, bookName);
+        return processedCount;
+    }
+
+    /**
+     * Novo método auxiliar para ler arquivos de texto do classpath.
+     */
+    private String extractTextFromTxt(String resourcePath) throws IOException {
+        Resource resource = resourceLoader.getResource(resourcePath);
+        try (InputStream is = resource.getInputStream()) {
+            return new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
+
+    private int[] parseReference(String reference) {
+        // Limpa a string de referência de quaisquer caracteres que não sejam dígitos, pontos ou hífens.
+        String cleanReference = reference.replaceAll("[^\\d.\\-]", "");
+
+        String[] parts = cleanReference.split("-");
+        String[] startRef = parts[0].split("\\.");
+
+        // Verificação de segurança para referências malformadas
+        if (startRef.length < 2) {
+            throw new IllegalArgumentException("Referência inicial malformada: " + reference);
+        }
+
+        int startChapter = Integer.parseInt(startRef[0]);
+        int startVerse = Integer.parseInt(startRef[1]);
+
+        int endChapter = startChapter;
+        int endVerse = startVerse;
+
+        if (parts.length > 1) {
+            String endPart = parts[1];
+
+            if (endPart.isEmpty()){
+                // Lida com casos como "1.1-" que podem vir do PDF
+                return new int[]{startChapter, startVerse, endChapter, endVerse};
+            }
+
+            if (endPart.contains(".")) {
+                String[] endRef = endPart.split("\\.");
+                if (endRef.length < 2) {
+                    throw new IllegalArgumentException("Referência final malformada: " + reference);
+                }
+                endChapter = Integer.parseInt(endRef[0]);
+                endVerse = Integer.parseInt(endRef[1]);
+            } else {
+                endChapter = startChapter;
+                endVerse = Integer.parseInt(endPart);
+            }
+        }
+
+        return new int[]{startChapter, startVerse, endChapter, endVerse};
     }
 }
