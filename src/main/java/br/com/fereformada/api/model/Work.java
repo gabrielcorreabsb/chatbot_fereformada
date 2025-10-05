@@ -12,6 +12,18 @@ import java.util.List;
 @Setter
 public class Work {
 
+    @Column(nullable = false, unique = true) // Adicione esta linha
+    private String acronym;                  // Adicione esta linha
+
+    // Adicione getters e setters para 'acronym'
+    public String getAcronym() {
+        return acronym;
+    }
+
+    public void setAcronym(String acronym) {
+        this.acronym = acronym;
+    }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;

@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -73,7 +75,14 @@ public class QueryService {
     }
 
     public QueryResponse query(String userQuestion) {
-        logger.info("Nova pergunta recebida: '{}'", userQuestion);
+        Optional<QueryResponse> directResponse = handleDirectReferenceQuery(userQuestion);
+        if (directResponse.isPresent()) {
+            logger.info("✅ Resposta gerada via busca direta por referência.");
+            return directResponse.get();
+        }
+        // =======================================================
+
+        logger.info("Nova pergunta recebida (busca híbrida): '{}'", userQuestion);
 
         // ===== OTIMIZAÇÃO 3: VERIFICAR CACHE =====
         String cacheKey = normalizeQuestion(userQuestion);
@@ -375,6 +384,19 @@ public class QueryService {
         double boost = 1.0;
         String source = item.source().toLowerCase();
         String questionLower = question.toLowerCase();
+
+        // ===== NOVO: SUPER-BOOST PARA DOCUMENTO CITADO DIRETAMENTE =====
+        if (questionLower.contains("catecismo") && source.contains("catecismo")) {
+            boost *= 2.0; // Boost massivo de 100%
+            logger.debug("  SUPER-BOOST CATECISMO aplicado para '{}'", item.source());
+        } else if (questionLower.contains("confissão") && source.contains("confissão de fé")) {
+            boost *= 2.0;
+            logger.debug("  SUPER-BOOST CONFISSÃO aplicado para '{}'", item.source());
+        } else if (questionLower.contains("institutas") && source.contains("institutas")) {
+            boost *= 2.0;
+            logger.debug("  SUPER-BOOST INSTITUTAS aplicado para '{}'", item.source());
+        }
+
         String content = item.content().toLowerCase();
 
         // ===== NOVO: PRIORIDADE MÁXIMA PARA ESCRITURA =====
@@ -391,6 +413,12 @@ public class QueryService {
             if (isDoctrinalQuestion(questionLower)) {
                 boost *= 1.15; // Ainda mais boost para doutrina
             }
+        }
+
+        boolean isDefinitionQuestion = questionLower.matches(".*(o que é|qual o|defina|explique o catecismo|pergunta \\d+).*");
+        if (isDefinitionQuestion && (source.contains("catecismo maior") || source.contains("breve catecismo"))) {
+            boost *= 1.1; // Adiciona um boost de 10% para catecismos neste cenário
+            logger.debug("  BOOST CATECISMO (10%) aplicado para '{}'", item.source());
         }
 
         // 2. Documentos confessionais (subordinados à Escritura)
@@ -588,29 +616,23 @@ public class QueryService {
         }
 
         return String.format("""
-                Você é um assistente teológico reformado que segue rigorosamente o princípio SOLA SCRIPTURA.
-                
-                PRINCÍPIOS FUNDAMENTAIS:
-                1. A Escritura é a autoridade suprema e infalível em questões de fé e prática.
-                2. Os documentos confessionais (Westminster, Calvino) são subordinados à Escritura.
-                3. SEMPRE priorize e cite primeiro as referências bíblicas [B1, B2, etc.].
-                4. Use os documentos confessionais [C1, C2, etc.] para explicar e sistematizar o ensino bíblico.
-                5. Se houver conflito, a Escritura prevalece sobre qualquer documento humano.
-                
-                INSTRUÇÕES ESPECÍFICAS:
-                - Comece sua resposta com a base bíblica quando disponível
-                - Cite as fontes usando [B1] para bíblicas e [C1] para confessionais
-                - Explique como os documentos confessionais confirmam/sistematizam o ensino bíblico
-                - Use tom professoral, mas sempre reverente à Palavra de Deus
-                - Termine com aplicação prática baseada na Escritura
-                
-                %s
-                
-                PERGUNTA DO USUÁRIO:
-                %s
-                
-                RESPOSTA (priorizando Sola Scriptura):
-                """, context.toString(), question);
+            Você é um assistente teológico especialista em Teologia Reformada. Sua tarefa é responder perguntas com base na Bíblia como autoridade final e nos Padrões de Westminster (Confissão, Catecismos) e outros documentos reformados como fiéis exposições da doutrina bíblica.
+
+            PRINCÍPIOS DE RESPOSTA:
+            1.  **Fundamento na Escritura (Sola Scriptura):** A Bíblia é a autoridade suprema e a fonte primária da sua resposta. Sempre comece estabelecendo a base bíblica para o tema, usando as fontes [B1, B2, etc.].
+            2.  **Elucidação Confessional:** Utilize os documentos confessionais [C1, C2, etc.] para aprofundar, sistematizar e explicar a doutrina bíblica. Mostre como eles organizam o ensino das Escrituras de forma clara.
+            3.  **Relação Harmoniosa:** A sua resposta deve demonstrar a harmonia entre a Escritura e as confissões. Trate os documentos confessionais como um resumo fiel e autorizado do que a Bíblia ensina.
+            4.  **Clareza e Precisão:** Use uma linguagem teológica precisa, mas clara. Aja como um professor explicando a doutrina reformada.
+
+            FONTES DISPONÍVEIS:
+            %s
+
+            PERGUNTA DO USUÁRIO:
+            %s
+
+            RESPOSTA ESTRUTURADA:
+            (Inicie com o fundamento bíblico, depois use as fontes confessionais para detalhar e sistematizar a explicação, e conclua de forma coesa.)
+            """, context.toString(), question);
     }
 
     private String limitContent(String content, int maxLength) {
@@ -746,20 +768,70 @@ public class QueryService {
         return combineTwoResults(vectorResults, ftsResults, userQuestion);
     }
 
+    /**
+     * Garante que a lista final de contextos tenha uma mistura saudável de fontes
+     * bíblicas e confessionais, evitando que o boosting excessivo elimine
+     * documentos importantes.
+     *
+     * @param allRankedResults Lista de todos os resultados, já com boosts aplicados e ordenada.
+     * @return Uma lista final com no máximo 5 itens, balanceada.
+     */
+    private List<ContextItem> ensureBalancedSources(List<ContextItem> allRankedResults) {
+        // 1. Separar os resultados por tipo
+        List<ContextItem> biblicalSources = allRankedResults.stream()
+                .filter(item -> item.source().contains("Bíblia de Genebra"))
+                .collect(Collectors.toList());
+
+        List<ContextItem> confessionalSources = allRankedResults.stream()
+                .filter(item -> !item.source().contains("Bíblia de Genebra"))
+                .collect(Collectors.toList());
+
+        // 2. Montar a lista final balanceada
+        // Estratégia: 3 fontes bíblicas + 2 confessionais (se disponíveis)
+        List<ContextItem> balancedList = new ArrayList<>();
+        Set<String> addedKeys = new HashSet<>(); // Para evitar duplicatas
+
+        // Adicionar as 3 melhores fontes bíblicas
+        for (int i = 0; i < Math.min(3, biblicalSources.size()); i++) {
+            ContextItem item = biblicalSources.get(i);
+            String key = generateItemKey(item);
+            if (!addedKeys.contains(key)) {
+                balancedList.add(item);
+                addedKeys.add(key);
+            }
+        }
+
+        // Adicionar as 2 melhores fontes confessionais
+        for (int i = 0; i < Math.min(2, confessionalSources.size()); i++) {
+            ContextItem item = confessionalSources.get(i);
+            String key = generateItemKey(item);
+            if (!addedKeys.contains(key)) {
+                balancedList.add(item);
+                addedKeys.add(key);
+            }
+        }
+
+        // 3. Reordenar a lista final pelo score para manter a relevância
+        balancedList.sort(Comparator.comparing(ContextItem::similarityScore).reversed());
+
+        logger.info("⚖️ Fontes balanceadas: {} Bíblicas, {} Confessionais.",
+                (int) balancedList.stream().filter(i -> i.source().contains("Bíblia de Genebra")).count(),
+                (int) balancedList.stream().filter(i -> !i.source().contains("Bíblia de Genebra")).count());
+
+        return balancedList;
+    }
+
     // ✅ Método simplificado para 2 tipos de busca
     private List<ContextItem> combineTwoResults(
             List<ContextItem> vectorResults,
             List<ContextItem> ftsResults,
             String userQuestion) {
-
         Map<String, ContextItem> combined = new HashMap<>();
-
         // Vector: peso 0.6
         for (ContextItem item : vectorResults) {
             String key = generateItemKey(item);
             combined.put(key, item.withAdjustedScore(item.similarityScore() * 0.6));
         }
-
         // FTS: peso 0.4
         for (ContextItem item : ftsResults) {
             String key = generateItemKey(item);
@@ -773,24 +845,23 @@ public class QueryService {
             }
         }
 
-        // Aplicar boosts Sola Scriptura e retornar top 5
-        List<ContextItem> finalResults = combined.values().stream()
+        // Aplicar boosts Sola Scriptura
+        List<ContextItem> allRankedResults = combined.values().stream()
                 .map(item -> applySmartBoosts(item, userQuestion))
                 .sorted(Comparator.comparing(ContextItem::similarityScore).reversed())
-                .limit(5)
                 .collect(Collectors.toList());
+
+        // ===== NOVA LÓGICA DE SELEÇÃO BALANCEADA =====
+        List<ContextItem> finalResults = ensureBalancedSources(allRankedResults);
 
         // Log otimizado
         logger.info("🔍 Resultados da busca híbrida:");
         logger.info("  🧠 Vector: {} resultados", vectorResults.size());
         logger.info("  🔤 FTS: {} resultados", ftsResults.size());
-        logger.info("  🎯 Final: {} resultados únicos", finalResults.size());
-
+        logger.info("  🎯 Final (Balanceado): {} resultados únicos", finalResults.size());
         logRerankedResults(finalResults);
-
         return finalResults;
     }
-
 
     // ===== MÉTODOS AUXILIARES =====
     private boolean isTheologicalTerm(String term) {
@@ -1103,6 +1174,61 @@ public class QueryService {
         return query;
     }
 
+    private Optional<QueryResponse> handleDirectReferenceQuery(String userQuestion) {
+        // Regex para detectar padrões como: CFW 21.1, CM 98, BC 1 (case-insensitive)
+        Pattern pattern = Pattern.compile("\\b(CFW|CM|BC)\\s*(\\d+)(?:[:.](\\d+))?\\b", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(userQuestion);
 
+        if (matcher.find()) {
+            String acronym = matcher.group(1);
+            int chapterOrQuestion = Integer.parseInt(matcher.group(2));
+            // O parágrafo/seção é opcional
+            Integer section = matcher.group(3) != null ? Integer.parseInt(matcher.group(3)) : null;
+
+            logger.info("🔍 Referência direta detectada: {} {}{}",
+                    acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""));
+
+            List<ContentChunk> results = contentChunkRepository.findDirectReference(acronym, chapterOrQuestion, section);
+
+            if (results.isEmpty()) {
+                logger.warn("⚠️ Referência direta {} não encontrada no banco de dados.", acronym.toUpperCase());
+                return Optional.empty(); // Deixa a busca híbrida continuar
+            }
+
+            ContentChunk directHit = results.get(0);
+            ContextItem context = ContextItem.from(directHit, 1.0); // Score máximo
+
+            // Criamos um prompt específico para explicar APENAS este trecho
+            String focusedPrompt = String.format("""
+            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
+            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
+
+            DOCUMENTO: %s
+            REFERÊNCIA: %s %d%s
+            TEXTO ENCONTRADO:
+            "%s"
+
+            INSTRUÇÕES:
+            1.  Comece confirmando a referência (Ex: "A Confissão de Fé de Westminster, no capítulo %d, parágrafo %d, afirma que...").
+            2.  Explique o significado teológico do texto em suas próprias palavras.
+            3.  Se aplicável, mencione brevemente a importância prática ou doutrinária deste ponto.
+            4.  Seja direto e focado exclusivamente no texto fornecido.
+            
+            EXPLICAÇÃO:
+            """,
+                    directHit.getWork().getTitle(),
+                    acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""),
+                    directHit.getContent(),
+                    chapterOrQuestion, (section != null ? section : 1)
+            );
+
+            String aiAnswer = geminiApiClient.generateContent(focusedPrompt);
+            QueryResponse response = new QueryResponse(aiAnswer, List.of(context.source()));
+
+            return Optional.of(response);
+        }
+
+        return Optional.empty(); // Nenhuma referência direta encontrada
+    }
 }
 

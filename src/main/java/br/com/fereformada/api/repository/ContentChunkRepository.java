@@ -83,4 +83,13 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             @Param("workTitle") String workTitle,
             Pageable pageable
     );
+
+    @Query("SELECT c FROM ContentChunk c JOIN c.work w WHERE " +
+            "LOWER(w.acronym) = LOWER(:acronym) AND " +
+            "c.chapterNumber = :chapterOrQuestion AND " +
+            "(:section IS NULL OR c.sectionNumber = :section)")
+    List<ContentChunk> findDirectReference(
+            @Param("acronym") String acronym,
+            @Param("chapterOrQuestion") int chapterOrQuestion,
+            @Param("section") Integer section);
 }
