@@ -17,19 +17,19 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     long countByWorkTitle(@Param("workTitle") String workTitle);
 
     // *** BUSCA POR SIMILARIDADE - USANDO QUERY NATIVA SEM MAPEAR content_vector ***
-    @Query(value = """
-        SELECT c.id, c.content, c.question, c.section_title, c.chapter_title, 
-               c.chapter_number, c.section_number, c.work_id,
-               (c.content_vector <=> CAST(:queryVector AS vector)) as similarity_score
-        FROM content_chunks c 
-        WHERE c.content_vector IS NOT NULL
-        ORDER BY c.content_vector <=> CAST(:queryVector AS vector)
+    @Query(nativeQuery = true, value = """
+        SELECT
+            id, content, question, section_title, chapter_title,
+            chapter_number, section_number, work_id,
+            1 - (content_vector <=> CAST(:embedding AS vector)) AS similarity_score
+        FROM
+            content_chunks
+        ORDER BY
+            similarity_score DESC
         LIMIT :limit
-        """, nativeQuery = true)
-    List<Object[]> findSimilarChunksRaw(
-            @Param("queryVector") String queryVector,
-            @Param("limit") int limit
-    );
+    """)
+    List<Object[]> findSimilarChunksRaw(String embedding, int limit);
+
 
     // *** BUSCA POR PALAVRA-CHAVE - SEM content_vector ***
     @Query("""
