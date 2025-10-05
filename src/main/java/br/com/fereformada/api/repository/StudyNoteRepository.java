@@ -1,8 +1,10 @@
 package br.com.fereformada.api.repository;
 
 import br.com.fereformada.api.model.StudyNote;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -11,14 +13,6 @@ import java.util.Set;
 @Repository
 public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
 
-    /**
-     * Conta o número de notas de estudo de uma fonte específica.
-     * Este método será usado pelo DatabaseSeeder para verificar se as notas
-     * da Bíblia de Genebra já foram carregadas.
-     *
-     * @param source A fonte da nota (ex: "Bíblia de Genebra").
-     * @return O número total de notas encontradas para a fonte.
-     */
     long countBySource(String source);
     long countByBook(String book);
 
@@ -45,4 +39,44 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
         LIMIT :limit
     """)
     List<Object[]> findSimilarNotesRaw(String embedding, int limit);
+
+    // *** CORRIGIDO: Usando Pageable em vez de int limit ***
+    @Query("""
+        SELECT s FROM StudyNote s 
+        WHERE LOWER(s.noteContent) LIKE LOWER(CONCAT('%', :keyword, '%'))
+           OR LOWER(s.book) LIKE LOWER(CONCAT('%', :keyword, '%'))
+        ORDER BY 
+            CASE 
+                WHEN LOWER(s.book) LIKE LOWER(CONCAT('%', :keyword, '%')) THEN 1
+                ELSE 2
+            END
+        """)
+    List<StudyNote> searchByKeywords(@Param("keyword") String keyword, Pageable pageable);
+
+    @Query("""
+        SELECT s FROM StudyNote s
+        WHERE s.book = :book
+          AND ((s.startChapter < :chapter) OR 
+               (s.startChapter = :chapter AND s.startVerse <= :verse))
+          AND ((s.endChapter > :chapter) OR
+               (s.endChapter = :chapter AND s.endVerse >= :verse))
+        ORDER BY s.startChapter, s.startVerse
+        """)
+    List<StudyNote> findByBiblicalReference(
+            @Param("book") String book,
+            @Param("chapter") int chapter,
+            @Param("verse") int verse
+    );
+
+    @Query("""
+        SELECT s FROM StudyNote s
+        WHERE s.book = :book
+          AND s.startChapter <= :chapter
+          AND s.endChapter >= :chapter
+        ORDER BY s.startChapter, s.startVerse
+        """)
+    List<StudyNote> findByBookAndChapter(
+            @Param("book") String book,
+            @Param("chapter") int chapter
+    );
 }

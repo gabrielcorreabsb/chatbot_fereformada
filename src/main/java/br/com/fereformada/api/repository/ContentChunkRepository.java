@@ -2,7 +2,7 @@ package br.com.fereformada.api.repository;
 
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
-import org.springframework.data.domain.Pageable; // <-- Importante
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -16,7 +16,6 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     @Query("SELECT COUNT(c) FROM ContentChunk c JOIN c.work w WHERE w.title = :workTitle")
     long countByWorkTitle(@Param("workTitle") String workTitle);
 
-    // *** BUSCA POR SIMILARIDADE - USANDO QUERY NATIVA SEM MAPEAR content_vector ***
     @Query(nativeQuery = true, value = """
         SELECT
             id, content, question, section_title, chapter_title,
@@ -30,8 +29,21 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     """)
     List<Object[]> findSimilarChunksRaw(String embedding, int limit);
 
+    // *** CORRIGIDO: Usando Pageable em vez de int limit ***
+    @Query("""
+        SELECT c FROM ContentChunk c 
+        WHERE LOWER(c.content) LIKE LOWER(CONCAT('%', :keyword, '%'))
+           OR LOWER(COALESCE(c.question, '')) LIKE LOWER(CONCAT('%', :keyword, '%'))
+           OR LOWER(COALESCE(c.chapterTitle, '')) LIKE LOWER(CONCAT('%', :keyword, '%'))
+        ORDER BY 
+            CASE 
+                WHEN LOWER(COALESCE(c.question, '')) LIKE LOWER(CONCAT('%', :keyword, '%')) THEN 1
+                WHEN LOWER(COALESCE(c.chapterTitle, '')) LIKE LOWER(CONCAT('%', :keyword, '%')) THEN 2
+                ELSE 3
+            END
+        """)
+    List<ContentChunk> searchByKeywords(@Param("keyword") String keyword, Pageable pageable);
 
-    // *** BUSCA POR PALAVRA-CHAVE - SEM content_vector ***
     @Query("""
         SELECT c FROM ContentChunk c 
         WHERE LOWER(c.content) LIKE LOWER(CONCAT('%', :keyword, '%'))
@@ -42,7 +54,6 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             Pageable pageable
     );
 
-    // *** BUSCA POR TÓPICOS ***
     @Query("""
         SELECT c FROM ContentChunk c 
         JOIN c.topics t 
