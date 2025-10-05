@@ -124,22 +124,6 @@ public class QueryService {
         return response;
     }
 
-    // ===== OTIMIZAÇÃO 1: HYBRID SEARCH =====
-    private List<ContextItem> performHybridSearch(String userQuestion) {
-        // 1. Busca vetorial (peso 70%)
-        List<ContextItem> vectorResults = performVectorSearch(userQuestion);
-
-        // 2. Verificar se precisa de busca por keywords
-        List<ContextItem> keywordResults = Collections.emptyList();
-
-        if (shouldUseKeywordSearch(userQuestion, vectorResults)) {
-            logger.info("🔍 Ativando busca por palavras-chave para melhorar resultados");
-            keywordResults = performKeywordSearch(userQuestion);
-        }
-
-        // 3. Combinar e reranquear
-        return combineAndRerankResults(vectorResults, keywordResults, userQuestion);
-    }
 
     private boolean shouldUseKeywordSearch(String question, List<ContextItem> vectorResults) {
         // Ativar keyword search se:
@@ -714,10 +698,7 @@ public class QueryService {
         // 2. Score base (proporção de keywords encontradas)
         double baseScore = (double) uniqueMatches / allKeywords.size();
 
-        // 3. Boost para keyword que triggou a busca
-        double triggerBoost = contentLower.contains(triggerKeyword.toLowerCase()) ? 1.2 : 1.0;
-
-        // 4. Boost para densidade de keywords (quantas vezes aparecem)
+        // 3. Boost para densidade de keywords
         long totalMatches = allKeywords.stream()
                 .mapToLong(keyword -> countOccurrences(contentLower, keyword.toLowerCase()))
                 .sum();
@@ -725,11 +706,8 @@ public class QueryService {
         double densityBoost = 1.0 + (totalMatches * 0.05); // 5% boost por ocorrência extra
         densityBoost = Math.min(densityBoost, 2.0); // Máximo 2x boost
 
-        // 5. Score final
-        double finalScore = baseScore * triggerBoost * densityBoost;
-
-        logger.debug("    📊 Score para '{}': base={:.2f}, trigger={:.2f}, density={:.2f}, final={:.2f}",
-                triggerKeyword, baseScore, triggerBoost, densityBoost, finalScore);
+        // 4. Score final
+        double finalScore = baseScore * densityBoost;
 
         return Math.min(finalScore, 1.0); // Máximo 1.0
     }
@@ -752,4 +730,379 @@ public class QueryService {
 
         return count;
     }
+
+    // ===== NOVO: HYBRID SEARCH COM FTS =====
+    private List<ContextItem> performHybridSearch(String userQuestion) {
+        // 1. Busca vetorial (peso 60%)
+        List<ContextItem> vectorResults = performVectorSearch(userQuestion);
+
+        // 2. Busca FTS (peso 40%)
+        List<ContextItem> ftsResults = performKeywordSearchFTS(userQuestion);
+
+        // 3. ✅ DESABILITAR JPQL (está com erro PostgreSQL)
+        List<ContextItem> jpqlResults = Collections.emptyList();
+
+        // 4. Combinar Vector + FTS (perfeito!)
+        return combineTwoResults(vectorResults, ftsResults, userQuestion);
+    }
+
+    // ✅ Método simplificado para 2 tipos de busca
+    private List<ContextItem> combineTwoResults(
+            List<ContextItem> vectorResults,
+            List<ContextItem> ftsResults,
+            String userQuestion) {
+
+        Map<String, ContextItem> combined = new HashMap<>();
+
+        // Vector: peso 0.6
+        for (ContextItem item : vectorResults) {
+            String key = generateItemKey(item);
+            combined.put(key, item.withAdjustedScore(item.similarityScore() * 0.6));
+        }
+
+        // FTS: peso 0.4
+        for (ContextItem item : ftsResults) {
+            String key = generateItemKey(item);
+            if (combined.containsKey(key)) {
+                ContextItem existing = combined.get(key);
+                combined.put(key, existing.withAdjustedScore(
+                        existing.similarityScore() + (item.similarityScore() * 0.4)
+                ));
+            } else {
+                combined.put(key, item.withAdjustedScore(item.similarityScore() * 0.4));
+            }
+        }
+
+        // Aplicar boosts Sola Scriptura e retornar top 5
+        List<ContextItem> finalResults = combined.values().stream()
+                .map(item -> applySmartBoosts(item, userQuestion))
+                .sorted(Comparator.comparing(ContextItem::similarityScore).reversed())
+                .limit(5)
+                .collect(Collectors.toList());
+
+        // Log otimizado
+        logger.info("🔍 Resultados da busca híbrida:");
+        logger.info("  🧠 Vector: {} resultados", vectorResults.size());
+        logger.info("  🔤 FTS: {} resultados", ftsResults.size());
+        logger.info("  🎯 Final: {} resultados únicos", finalResults.size());
+
+        logRerankedResults(finalResults);
+
+        return finalResults;
+    }
+
+
+    // ===== MÉTODOS AUXILIARES =====
+    private boolean isTheologicalTerm(String term) {
+        String[] theologicalTerms = {
+                "deus", "cristo", "jesus", "espírito", "santo", "salvação", "graça", "fé",
+                "pecado", "justificação", "santificação", "eleição", "predestinação",
+                "batismo", "ceia", "igreja", "oração", "bíblia", "escritura", "trindade",
+                "redenção", "regeneração", "conversão", "arrependimento", "perdão"
+        };
+
+        return Arrays.stream(theologicalTerms).anyMatch(t -> t.equals(term.toLowerCase()));
+    }
+
+    private boolean isBiblicalBook(String term) {
+        String[] books = {
+                "gênesis", "êxodo", "levítico", "números", "deuteronômio", "josué", "juízes", "rute",
+                "samuel", "reis", "crônicas", "esdras", "neemias", "ester", "jó", "salmos", "provérbios",
+                "eclesiastes", "cantares", "isaías", "jeremias", "ezequiel", "daniel", "oséias", "joel",
+                "amós", "obadias", "jonas", "miquéias", "naum", "habacuque", "sofonias",
+                "ageu", "zacarias", "malaquias", "mateus", "marcos", "lucas", "joão", "atos", "romanos",
+                "coríntios", "gálatas", "efésios", "filipenses", "colossenses", "tessalonicenses",
+                "timóteo", "tito", "filemom", "hebreus", "tiago", "pedro", "apocalipse"
+        };
+        return Arrays.stream(books).anyMatch(b -> term.toLowerCase().contains(b));
+    }
+
+    // ===== CONVERSORES FTS =====
+    private List<ContextItem> convertFTSChunkResults(List<Object[]> results, Set<String> originalKeywords) {
+        List<ContextItem> items = new ArrayList<>();
+
+        for (Object[] row : results) {
+            try {
+                // Mapear campos da query FTS
+                ContentChunk chunk = new ContentChunk();
+                chunk.setId(((Number) row[0]).longValue());
+                chunk.setContent((String) row[1]);
+                chunk.setQuestion((String) row[2]);
+                chunk.setSectionTitle((String) row[3]);
+                chunk.setChapterTitle((String) row[4]);
+                chunk.setChapterNumber(row[5] != null ? ((Number) row[5]).intValue() : null);
+                chunk.setSectionNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
+
+                // Buscar Work por ID
+                Long workId = ((Number) row[7]).longValue();
+                Work work = workRepository.findById(workId).orElse(null);
+                chunk.setWork(work);
+
+                // Usar FTS rank como score base
+                double ftsRank = ((Number) row[8]).doubleValue();
+
+                // Combinar com nosso score de keywords
+                double keywordScore = calculateEnhancedKeywordScore(chunk.getContent(), originalKeywords, "");
+
+                // Score final: 70% FTS + 30% keyword
+                double finalScore = (ftsRank * 0.7) + (keywordScore * 0.3);
+
+                items.add(ContextItem.from(chunk, finalScore));
+
+                logger.debug("  📄 Chunk {}: FTS={:.3f}, Keyword={:.3f}, Final={:.3f}",
+                        chunk.getId(), ftsRank, keywordScore, finalScore);
+
+            } catch (Exception e) {
+                logger.warn("❌ Erro ao converter resultado FTS chunk: {}", e.getMessage());
+            }
+        }
+
+        return items;
+    }
+
+    private List<ContextItem> convertFTSNoteResults(List<Object[]> results, Set<String> originalKeywords) {
+        List<ContextItem> items = new ArrayList<>();
+
+        for (Object[] row : results) {
+            try {
+                StudyNote note = new StudyNote();
+                note.setId(((Number) row[0]).longValue());
+                note.setBook((String) row[1]);
+                note.setStartChapter(((Number) row[2]).intValue());
+                note.setStartVerse(((Number) row[3]).intValue());
+                note.setEndChapter(((Number) row[4]).intValue());
+                note.setEndVerse(((Number) row[5]).intValue());
+                note.setNoteContent((String) row[6]);
+
+                // FTS rank
+                double ftsRank = ((Number) row[7]).doubleValue();
+                double keywordScore = calculateEnhancedKeywordScore(note.getNoteContent(), originalKeywords, "");
+                double finalScore = (ftsRank * 0.7) + (keywordScore * 0.3);
+
+                items.add(ContextItem.from(note, finalScore));
+
+                logger.debug("  📖 Nota {}: FTS={:.3f}, Keyword={:.3f}, Final={:.3f}",
+                        note.getId(), ftsRank, keywordScore, finalScore);
+
+            } catch (Exception e) {
+                logger.warn("❌ Erro ao converter resultado FTS note: {}", e.getMessage());
+            }
+        }
+
+        return items;
+    }
+
+    // ===== COMBINADOR TRIPLO =====
+    private List<ContextItem> combineTripleResults(
+            List<ContextItem> vectorResults,
+            List<ContextItem> ftsResults,
+            List<ContextItem> jpqlResults,
+            String userQuestion) {
+
+        Map<String, ContextItem> combined = new HashMap<>();
+
+        // Vector: peso 0.5
+        for (ContextItem item : vectorResults) {
+            String key = generateItemKey(item);
+            combined.put(key, item.withAdjustedScore(item.similarityScore() * 0.5));
+        }
+
+        // FTS: peso 0.35
+        for (ContextItem item : ftsResults) {
+            String key = generateItemKey(item);
+            if (combined.containsKey(key)) {
+                ContextItem existing = combined.get(key);
+                combined.put(key, existing.withAdjustedScore(
+                        existing.similarityScore() + (item.similarityScore() * 0.35)
+                ));
+            } else {
+                combined.put(key, item.withAdjustedScore(item.similarityScore() * 0.35));
+            }
+        }
+
+        // JPQL: peso 0.15
+        for (ContextItem item : jpqlResults) {
+            String key = generateItemKey(item);
+            if (combined.containsKey(key)) {
+                ContextItem existing = combined.get(key);
+                combined.put(key, existing.withAdjustedScore(
+                        existing.similarityScore() + (item.similarityScore() * 0.15)
+                ));
+            } else {
+                combined.put(key, item.withAdjustedScore(item.similarityScore() * 0.15));
+            }
+        }
+
+        // Aplicar boosts e retornar top 5
+        List<ContextItem> finalResults = combined.values().stream()
+                .map(item -> applySmartBoosts(item, userQuestion))
+                .sorted(Comparator.comparing(ContextItem::similarityScore).reversed())
+                .limit(5)
+                .collect(Collectors.toList());
+
+        // Log detalhado
+        logTripleSearchResults(vectorResults, ftsResults, jpqlResults, finalResults);
+
+        return finalResults;
+    }
+
+    // ===== LOGGING MELHORADO =====
+    private void logTripleSearchResults(
+            List<ContextItem> vectorResults,
+            List<ContextItem> ftsResults,
+            List<ContextItem> jpqlResults,
+            List<ContextItem> finalResults) {
+
+        logger.info("🔍 Resultados da busca híbrida:");
+        logger.info("  🧠 Vector: {} resultados", vectorResults.size());
+        logger.info("  🔤 FTS: {} resultados", ftsResults.size());
+        logger.info("  📝 JPQL: {} resultados", jpqlResults.size());
+        logger.info("  🎯 Final: {} resultados únicos", finalResults.size());
+
+        // Mostrar distribuição de fontes
+        long biblicalNotes = finalResults.stream().filter(ContextItem::isBiblicalNote).count();
+        long confessional = finalResults.stream().filter(item -> !item.isBiblicalNote()).count();
+
+        logger.info("  📖 Fontes bíblicas: {}, ⛪ Fontes confessionais: {}", biblicalNotes, confessional);
+
+        // Top 3 com detalhes
+        for (int i = 0; i < Math.min(3, finalResults.size()); i++) {
+            ContextItem item = finalResults.get(i);
+            String type = item.isBiblicalNote() ? "📖" : "⛪";
+            logger.info("  {}. {} [Score: {:.3f}] {}",
+                    i + 1, type, item.similarityScore(), item.source());
+        }
+
+        // Qualidade geral
+        double avgScore = finalResults.stream()
+                .mapToDouble(ContextItem::similarityScore)
+                .average()
+                .orElse(0.0);
+
+        String qualityEmoji = avgScore > 0.8 ? "🔥" : avgScore > 0.6 ? "✅" : "⚠️";
+        logger.info("  {} Qualidade média: {:.1f}%", qualityEmoji, avgScore * 100);
+    }
+
+    private List<ContextItem> performKeywordSearchFTS(String question) {
+        Set<String> keywords = extractImportantKeywords(question);
+
+        if (keywords.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // Construir query FTS flexível
+        String tsquery = buildIntelligentFTSQuery(keywords, question);
+
+        if (tsquery.isEmpty()) {
+            logger.debug("❌ Não foi possível construir query FTS");
+            return Collections.emptyList();
+        }
+
+        List<ContextItem> results = new ArrayList<>();
+
+        try {
+            logger.debug("🔍 Executando FTS com query: '{}'", tsquery);
+
+            // Buscar com FTS
+            List<Object[]> chunkResults = contentChunkRepository.searchByKeywordsFTS(tsquery, 5);
+            List<Object[]> noteResults = studyNoteRepository.searchByKeywordsFTS(tsquery, 5);
+
+            logger.debug("  📄 FTS Chunks encontrados: {}", chunkResults.size());
+            logger.debug("  📖 FTS Notes encontradas: {}", noteResults.size());
+
+            // Converter resultados
+            results.addAll(convertFTSChunkResults(chunkResults, keywords));
+            results.addAll(convertFTSNoteResults(noteResults, keywords));
+
+            logger.debug("✅ FTS encontrou {} resultados únicos", results.size());
+
+            // ✅ Se não encontrou nada, tentar termo principal
+            if (results.isEmpty() && !keywords.isEmpty()) {
+                String mainTerm = keywords.stream()
+                        .filter(k -> k.length() > 4)
+                        .findFirst()
+                        .orElse(keywords.iterator().next());
+
+                logger.info("🔄 Tentando FTS com termo principal: '{}'", mainTerm);
+
+                List<Object[]> fallbackChunks = contentChunkRepository.searchByKeywordsFTS(mainTerm, 3);
+                List<Object[]> fallbackNotes = studyNoteRepository.searchByKeywordsFTS(mainTerm, 3);
+
+                results.addAll(convertFTSChunkResults(fallbackChunks, keywords));
+                results.addAll(convertFTSNoteResults(fallbackNotes, keywords));
+
+                logger.debug("✅ Fallback FTS encontrou {} resultados", results.size());
+            }
+
+        } catch (Exception e) {
+            logger.warn("❌ FTS falhou: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+
+        return results;
+    }
+
+    private String buildIntelligentFTSQuery(Set<String> keywords, String originalQuestion) {
+        List<String> validKeywords = keywords.stream()
+                .filter(k -> k.length() > 2)
+                .filter(k -> !STOP_WORDS.contains(k))
+                .filter(k -> !k.matches("\\d+"))
+                .collect(Collectors.toList());
+
+        if (validKeywords.isEmpty()) {
+            return "";
+        }
+
+        // ✅ ESTRATÉGIA: Sempre usar OR para máxima cobertura
+        List<String> searchTerms = new ArrayList<>();
+
+        for (String keyword : validKeywords.stream().limit(5).collect(Collectors.toList())) {
+            searchTerms.add(keyword);
+
+            // Adicionar variações para termos importantes
+            switch (keyword.toLowerCase()) {
+                case "bíblia":
+                    searchTerms.add("escritura");
+                    searchTerms.add("palavra");
+                    break;
+                case "batismo":
+                    searchTerms.add("batizar");
+                    searchTerms.add("batismal");
+                    break;
+                case "infantil":
+                    searchTerms.add("criança");
+                    searchTerms.add("bebê");
+                    searchTerms.add("infante");
+                    break;
+                case "salvação":
+                    searchTerms.add("redenção");
+                    searchTerms.add("justificação");
+                    break;
+                case "graça":
+                    searchTerms.add("favor");
+                    searchTerms.add("misericórdia");
+                    break;
+                case "fé":
+                    searchTerms.add("crença");
+                    searchTerms.add("confiança");
+                    break;
+                case "pecado":
+                    searchTerms.add("transgressão");
+                    searchTerms.add("iniquidade");
+                    break;
+            }
+        }
+
+        // ✅ Usar OR para encontrar qualquer conteúdo relevante
+        String query = String.join(" | ", searchTerms.stream()
+                .distinct()
+                .limit(8)
+                .collect(Collectors.toList()));
+
+        logger.debug("  🔍 Query FTS flexível (OR): {}", query);
+        return query;
+    }
+
+
 }
+

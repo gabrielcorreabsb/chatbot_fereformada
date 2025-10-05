@@ -40,7 +40,23 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
     """)
     List<Object[]> findSimilarNotesRaw(String embedding, int limit);
 
-    // *** CORRIGIDO: Usando Pageable em vez de int limit ***
+    // ===== NOVO: FTS POSTGRESQL =====
+    @Query(value = """
+        SELECT 
+            s.id, s.book, s.start_chapter, s.start_verse, s.end_chapter, s.end_verse, s.note_content,
+            ts_rank(
+                to_tsvector('portuguese', s.note_content || ' ' || s.book), 
+                to_tsquery('portuguese', :tsquery)
+            ) as fts_rank
+        FROM study_notes s
+        WHERE to_tsvector('portuguese', s.note_content || ' ' || s.book)
+              @@ to_tsquery('portuguese', :tsquery)
+        ORDER BY fts_rank DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchByKeywordsFTS(@Param("tsquery") String tsquery, @Param("limit") int limit);
+
+    // ===== JPQL FALLBACK (mantido) =====
     @Query("""
         SELECT s FROM StudyNote s 
         WHERE LOWER(s.noteContent) LIKE LOWER(CONCAT('%', :keyword, '%'))

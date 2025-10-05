@@ -29,7 +29,24 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     """)
     List<Object[]> findSimilarChunksRaw(String embedding, int limit);
 
-    // *** CORRIGIDO: Usando Pageable em vez de int limit ***
+    // ===== NOVO: FTS POSTGRESQL =====
+    @Query(value = """
+        SELECT 
+            c.id, c.content, c.question, c.section_title, c.chapter_title,
+            c.chapter_number, c.section_number, c.work_id,
+            ts_rank(
+                to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, '')), 
+                to_tsquery('portuguese', :tsquery)
+            ) as fts_rank
+        FROM content_chunks c
+        WHERE to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, ''))
+              @@ to_tsquery('portuguese', :tsquery)
+        ORDER BY fts_rank DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<Object[]> searchByKeywordsFTS(@Param("tsquery") String tsquery, @Param("limit") int limit);
+
+    // ===== JPQL FALLBACK (mantido) =====
     @Query("""
         SELECT c FROM ContentChunk c 
         WHERE LOWER(c.content) LIKE LOWER(CONCAT('%', :keyword, '%'))
