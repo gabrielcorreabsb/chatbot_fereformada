@@ -29,6 +29,7 @@ import java.io.InputStream;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -104,13 +105,13 @@ public class DatabaseSeeder implements CommandLineRunner {
 
     private DatabaseStatus checkDatabaseStatus() {
         DatabaseStatus status = new DatabaseStatus();
+        final int TOTAL_BIBLE_BOOKS = 66; // 39 AT + 27 NT
 
         // Verificar obras existentes
         status.hasConfession = workRepository.findByTitle("Confissão de Fé de Westminster").isPresent();
         status.hasLargerCatechism = workRepository.findByTitle("Catecismo Maior de Westminster").isPresent();
         status.hasShorterCatechism = workRepository.findByTitle("Breve Catecismo de Westminster").isPresent();
         status.hasInstitutes = workRepository.findByTitle("Institutas da Religião Cristã").isPresent();
-        status.hasGenevaNotes = workRepository.findByTitle("Geneva Notes").isPresent();
 
         // Contar chunks por obra
         if (status.hasConfession) {
@@ -125,8 +126,17 @@ public class DatabaseSeeder implements CommandLineRunner {
         if (status.hasInstitutes) {
             status.institutesChunks = contentChunkRepository.countByWorkTitle("Institutas da Religião Cristã");
         }
+
+        // --- CORREÇÃO APLICADA AQUI ---
+
+        // 1. ADICIONE ESTA LINHA para buscar a contagem de livros distintos
+        long processedBooksCount = studyNoteRepository.countDistinctBookBySource("Bíblia de Genebra");
+
+        // Esta linha é para o log, então a mantemos
         status.genevaNotesCount = studyNoteRepository.countBySource("Bíblia de Genebra");
-        status.hasGenevaNotes = status.genevaNotesCount > 0;
+
+        // 2. USE a variável que acabamos de criar para a verificação
+        status.hasGenevaNotes = (processedBooksCount >= TOTAL_BIBLE_BOOKS);
 
         return status;
     }
@@ -614,11 +624,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         // Processar OT
         for (String bookFileName : otBooks) {
             String bookName = bookFileName.replace('_', ' ');
-            if (studyNoteRepository.countByBook(bookName) > 0) {
-                logger.info("⏭️ Notas para '{}' já existem no banco. Pulando.", bookName);
-                booksSkipped++;
-                continue;
-            }
+
             String filePath = "classpath:data-content/bible-notes/ot/" + bookFileName + ".txt";
             int[] results = processStudyNoteFile(filePath, bookName, SOURCE_NAME);
             totalNotesLoaded += results[0];
@@ -655,6 +661,14 @@ public class DatabaseSeeder implements CommandLineRunner {
 
 
     private int[] processStudyNoteFile(String filePath, String bookName, String sourceName) {
+
+        Set<String> existingKeys = studyNoteRepository.findExistingNoteKeysByBook(bookName);
+        if (!existingKeys.isEmpty()) {
+            logger.info("Retomando processamento de '{}'. {} notas já existem e serão puladas.", bookName, existingKeys.size());
+        } else {
+            logger.info("Iniciando processamento de '{}' do zero.", bookName);
+        }
+
         logger.info("Processando notas para '{}' do arquivo {}...", bookName, filePath);
 
         // Log no arquivo
@@ -683,7 +697,7 @@ public class DatabaseSeeder implements CommandLineRunner {
 
         String[] noteBlocks = cleanedText.split("\\*\\s+(?=[\\d])");
         int processedCount = 0;
-        int skippedCount = 0;
+        int skippedCount = existingKeys.size();
 
         // 1. Inicializa a lista para o lote
         List<StudyNote> batch = new java.util.ArrayList<>(BATCH_SIZE);
@@ -696,38 +710,41 @@ public class DatabaseSeeder implements CommandLineRunner {
             try {
                 StudyNote note = parseNoteBlock(block.trim(), bookName, sourceName);
                 if (note != null) {
-                    // 2. Gera o embedding ANTES de adicionar ao lote
+                    // 2. GERAR A CHAVE E VERIFICAR SE JÁ EXISTE
+                    String noteKey = note.getStartChapter() + ":" + note.getStartVerse();
+                    if (existingKeys.contains(noteKey)) {
+                        continue; // Pula para a próxima nota do arquivo
+                    }
+
+                    // 3. SE NÃO EXISTIR, PROCESSAR NORMALMENTE
+                    // (Gerar embedding, adicionar ao lote, etc.)
                     try {
                         PGvector vector = geminiApiClient.generateEmbedding(note.getNoteContent());
                         note.setNoteVector(convertPGvectorToFloatArray(vector));
-                        logger.debug("Embedding gerado para nota de {} {}:{}",
-                                bookName, note.getStartChapter(), note.getStartVerse());
+                        logger.debug("Embedding gerado para nota de {} {}", bookName, noteKey);
+                        Thread.sleep(250); // Mantenha o delay!
                     } catch (Exception e) {
-                        logger.warn("Não foi possível gerar embedding para nota de {}. Erro: {}",
-                                bookName, e.getMessage());
-                        // Você pode decidir pular a nota se o embedding for crucial
-                        // ou continuar com o vetor nulo.
+                        logger.warn("Não foi possível gerar embedding para nota de {}. Erro: {}", bookName, e.getMessage());
+                        Thread.sleep(1000);
                     }
 
-                    // 3. Adiciona a nota COMPLETA (com vetor) ao lote
                     batch.add(note);
                     processedCount++;
 
-                    // 4. Verifica se o lote está cheio para salvá-lo
                     if (batch.size() >= BATCH_SIZE) {
-                        logger.info("Processadas {} notas para {}. Salvando lote...", processedCount, bookName);
+                        logger.info("Processadas {} novas notas para {}. Salvando lote...", processedCount, bookName);
                         studyNoteBatchService.saveBatch(batch);
-                        batch.clear(); // Limpa o lote para o próximo ciclo
+                        batch.clear();
                     }
-
                 } else {
-                    skippedCount++;
+                    // A nota não pôde ser parseada, não é salva nem contada como pulada (além da contagem inicial)
                     logSkippedNote(bookName, block);
                 }
             } catch (Exception e) {
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
                 logger.error("Falha ao processar bloco de nota para '{}'. Erro: {}", bookName, e.getMessage());
-                logger.debug("Bloco problemático: {}", block.substring(0, Math.min(100, block.length())));
-                skippedCount++;
                 logSkippedNote(bookName, block);
             }
         }
