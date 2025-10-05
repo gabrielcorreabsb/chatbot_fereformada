@@ -40,15 +40,21 @@ public class QueryService {
     );
 
     // ===== SINÔNIMOS TEOLÓGICOS =====
-    private static final Map<String, List<String>> THEOLOGICAL_SYNONYMS = Map.of(
-            "salvação", List.of("redenção", "justificação", "soteriologia"),
-            "pecado", List.of("transgressão", "iniquidade", "queda", "depravação"),
-            "deus", List.of("senhor", "criador", "pai celestial", "soberano", "yahweh"),
-            "fé", List.of("crença", "confiança", "fidelidade"),
-            "graça", List.of("favor", "misericórdia", "benevolência"),
-            "eleição", List.of("predestinação", "escolha", "chamado"),
-            "igreja", List.of("congregação", "assembleia", "corpo de cristo"),
-            "escritura", List.of("bíblia", "palavra de deus", "sagradas escrituras")
+    private static final Map<String, List<String>> THEOLOGICAL_SYNONYMS = Map.ofEntries(
+            Map.entry("salvação", List.of("redenção", "justificação", "soteriologia", "regeneração")),
+            Map.entry("pecado", List.of("transgressão", "iniquidade", "queda", "depravação", "mal")),
+            Map.entry("deus", List.of("senhor", "criador", "pai", "soberano", "yahweh", "jeová")),
+            Map.entry("fé", List.of("crença", "confiança", "fidelidade", "crer")),
+            Map.entry("graça", List.of("favor", "misericórdia", "benevolência", "bondade")),
+            Map.entry("eleição", List.of("predestinação", "escolha", "chamado", "eleitos")),
+            Map.entry("igreja", List.of("congregação", "assembleia", "corpo", "noiva")),
+            Map.entry("escritura", List.of("bíblia", "palavra", "sagradas", "escrituras")),
+            Map.entry("batismo", List.of("batizar", "sacramento", "imersão", "aspersão")),
+            Map.entry("ceia", List.of("comunhão", "eucaristia", "santa", "sacramento")),
+            Map.entry("oração", List.of("orar", "súplica", "intercessão", "petição")),
+            Map.entry("santificação", List.of("santidade", "purificação", "consagração")),
+            Map.entry("justificação", List.of("justificar", "declarar", "justo", "imputação")),
+            Map.entry("cristo", List.of("jesus", "messias", "salvador", "redentor", "cordeiro"))
     );
 
     private final ContentChunkRepository contentChunkRepository;
@@ -137,23 +143,40 @@ public class QueryService {
 
     private boolean shouldUseKeywordSearch(String question, List<ContextItem> vectorResults) {
         // Ativar keyword search se:
+
         // 1. Resultados vetoriais fracos
         boolean hasWeakVectorResults = vectorResults.isEmpty() ||
                 vectorResults.stream().allMatch(item -> item.similarityScore() < 0.7);
 
-        // 2. Pergunta contém referência bíblica específica
+        // 2. NOVO: Pergunta explicitamente pede base bíblica
+        boolean needsBiblicalFoundation = question.toLowerCase().matches(
+                ".*(o que a bíblia|que diz a escritura|base bíblica|fundamentação|versículo|texto bíblico).*"
+        );
+
+        // 3. Pergunta contém referência bíblica específica
         boolean hasBiblicalReference = question.matches(".*\\d+[:\\.]\\d+.*") ||
                 question.toLowerCase().matches(".*(capítulo|versículo|verso|cap\\.|v\\.).*");
 
-        // 3. Pergunta contém nomes específicos de documentos
+        // 4. NOVO: Pergunta sobre livros bíblicos específicos
+        boolean mentionsBiblicalBooks = question.toLowerCase().matches(
+                ".*(gênesis|êxodo|levítico|números|deuteronômio|josué|juízes|rute|samuel|reis|crônicas|" +
+                        "esdras|neemias|ester|jó|salmos|provérbios|eclesiastes|cantares|isaías|jeremias|" +
+                        "ezequiel|daniel|oséias|joel|amós|obadias|jonas|miquéias|naum|habacuque|sofonias|" +
+                        "ageu|zacarias|malaquias|mateus|marcos|lucas|joão|atos|romanos|coríntios|gálatas|" +
+                        "efésios|filipenses|colossenses|tessalonicenses|timóteo|tito|filemom|hebreus|tiago|" +
+                        "pedro|apocalipse).*"
+        );
+
+        // 5. Pergunta contém nomes específicos de documentos
         boolean hasSpecificNames = question.toLowerCase().matches(
                 ".*(westminster|calvino|catecismo|confissão|institutas|genebra).*"
         );
 
-        // 4. Pergunta muito curta (provável busca factual)
+        // 6. Pergunta muito curta (provável busca factual)
         boolean isShortQuery = question.split("\\s+").length <= 5;
 
-        return hasWeakVectorResults || hasBiblicalReference || hasSpecificNames || isShortQuery;
+        return hasWeakVectorResults || needsBiblicalFoundation || hasBiblicalReference ||
+                mentionsBiblicalBooks || hasSpecificNames || isShortQuery;
     }
 
     private List<ContextItem> performKeywordSearch(String question) {
@@ -229,20 +252,24 @@ public class QueryService {
     }
 
     private void addImportantPhrases(String question, Set<String> keywords) {
-        // Frases teológicas importantes que devem ser buscadas juntas
-        Map<String, String> importantPhrases = Map.of(
-                "espírito santo", "espírito & santo",
-                "jesus cristo", "jesus & cristo",
-                "novo testamento", "novo & testamento",
-                "antigo testamento", "antigo & testamento",
-                "sola scriptura", "sola & scriptura",
-                "sola fide", "sola & fide",
-                "sola gratia", "sola & gratia"
+        // ===== FRASES IMPORTANTES =====
+        Map<String, List<String>> importantPhrases = Map.ofEntries(
+                Map.entry("espírito santo", List.of("espírito", "santo")),
+                Map.entry("jesus cristo", List.of("jesus", "cristo")),
+                Map.entry("palavra de deus", List.of("palavra", "deus")),
+                Map.entry("reino de deus", List.of("reino", "deus")),
+                Map.entry("filho de deus", List.of("filho", "deus")),
+                Map.entry("corpo de cristo", List.of("corpo", "cristo")),
+                Map.entry("novo testamento", List.of("novo", "testamento")),
+                Map.entry("antigo testamento", List.of("antigo", "testamento")),
+                Map.entry("sola scriptura", List.of("sola", "scriptura", "escritura")),
+                Map.entry("sola fide", List.of("sola", "fide", "fé"))
         );
 
-        for (Map.Entry<String, String> entry : importantPhrases.entrySet()) {
-            if (question.contains(entry.getKey())) {
-                keywords.add(entry.getValue());
+        String questionLower = question.toLowerCase();
+        for (Map.Entry<String, List<String>> entry : importantPhrases.entrySet()) {
+            if (questionLower.contains(entry.getKey())) {
+                keywords.addAll(entry.getValue());
             }
         }
     }
@@ -309,42 +336,76 @@ public class QueryService {
         double boost = 1.0;
         String source = item.source().toLowerCase();
         String questionLower = question.toLowerCase();
+        String content = item.content().toLowerCase();
 
-        // 1. Boost por autoridade da fonte
-        if (source.contains("confissão de fé")) {
-            boost *= 1.3;  // Máxima autoridade doutrinária
+        // ===== NOVO: PRIORIDADE MÁXIMA PARA ESCRITURA =====
+        // 1. BOOST SUPREMO para notas bíblicas (Sola Scriptura!)
+        if (source.contains("bíblia de genebra")) {
+            boost *= 1.4;  // MAIOR que qualquer documento confessional
+
+            // Boost extra se contém referência bíblica direta
+            if (content.matches(".*\\d+[:\\.]\\d+.*")) {
+                boost *= 1.2;  // Total: 1.68x
+            }
+
+            // Boost extra para temas doutrinários que precisam de base bíblica
+            if (isDoctrinalQuestion(questionLower)) {
+                boost *= 1.15; // Ainda mais boost para doutrina
+            }
+        }
+
+        // 2. Documentos confessionais (subordinados à Escritura)
+        else if (source.contains("confissão de fé")) {
+            boost *= 1.3;
         } else if (source.contains("catecismo maior")) {
             boost *= 1.25;
         } else if (source.contains("breve catecismo")) {
             boost *= 1.2;
         } else if (source.contains("institutas")) {
             boost *= 1.15;
-        } else if (source.contains("bíblia de genebra")) {
-            boost *= 1.1;
         }
 
-        // 2. Boost se tem estrutura pergunta/resposta e a pergunta é similar
+        // 3. Boost se tem estrutura pergunta/resposta
         if (item.question() != null && !item.question().isEmpty()) {
             boost *= 1.1;
 
-            // Boost extra se a pergunta da fonte é muito similar à pergunta do usuário
             if (calculateSimilarity(item.question().toLowerCase(), questionLower) > 0.7) {
                 boost *= 1.2;
             }
         }
 
-        // 3. Boost para referências bíblicas diretas quando relevante
-        if (questionLower.matches(".*\\d+[:\\.]\\d+.*") &&
-                item.content().matches(".*\\d+[:\\.]\\d+.*")) {
-            boost *= 1.15;
+        // 4. NOVO: Boost para conteúdo que cita muitas referências bíblicas
+        int biblicalReferences = countBiblicalReferences(item.content());
+        if (biblicalReferences > 2) {
+            boost *= 1.1 + (biblicalReferences * 0.05); // Mais referências = mais boost
         }
 
-        // 4. Penalidade para conteúdo muito curto
+        // 5. Penalidade para conteúdo muito curto
         if (item.content().length() < 100) {
             boost *= 0.8;
         }
 
         return item.withAdjustedScore(item.similarityScore() * boost);
+    }
+
+    // ===== NOVOS MÉTODOS AUXILIARES =====
+    private boolean isDoctrinalQuestion(String question) {
+        // Detectar perguntas que precisam de fundamentação bíblica sólida
+        String[] doctrinalKeywords = {
+                "doutrina", "ensina", "bíblia", "escritura", "palavra", "deus",
+                "salvação", "pecado", "graça", "fé", "justificação", "santificação",
+                "eleição", "predestinação", "trindade", "cristo", "espírito",
+                "igreja", "sacramento", "batismo", "ceia", "oração", "lei"
+        };
+
+        return Arrays.stream(doctrinalKeywords)
+                .anyMatch(question::contains);
+    }
+
+    private int countBiblicalReferences(String content) {
+        // Contar referências bíblicas no formato "Livro X:Y" ou "X:Y"
+        String pattern = "\\b\\d+[:\\.]\\d+(-\\d+)?\\b";
+        return (int) content.split(pattern).length - 1;
     }
 
     private double calculateSimilarity(String text1, String text2) {
@@ -434,46 +495,75 @@ public class QueryService {
     // ===== PROMPT OTIMIZADO =====
     private String buildOptimizedPrompt(String question, List<ContextItem> items) {
         StringBuilder context = new StringBuilder();
-        context.append("CONTEXTO RELEVANTE (ordenado por relevância):\n\n");
 
-        int contextNumber = 1;
-        for (ContextItem item : items) {
-            context.append(String.format("[%d] Fonte: %s\n", contextNumber++, item.source()));
+        // ===== NOVO: SEPARAR FONTES BÍBLICAS DAS CONFESSIONAIS =====
+        List<ContextItem> biblicalSources = items.stream()
+                .filter(item -> item.source().contains("Bíblia de Genebra"))
+                .collect(Collectors.toList());
 
-            if (item.question() != null && !item.question().isEmpty()) {
-                context.append("    📝 Pergunta Original: ").append(item.question()).append("\n");
+        List<ContextItem> confessionalSources = items.stream()
+                .filter(item -> !item.source().contains("Bíblia de Genebra"))
+                .collect(Collectors.toList());
+
+        // Mostrar fontes bíblicas primeiro
+        if (!biblicalSources.isEmpty()) {
+            context.append("📖 FUNDAMENTAÇÃO BÍBLICA (Sola Scriptura):\n\n");
+            int biblicalNumber = 1;
+            for (ContextItem item : biblicalSources) {
+                context.append(String.format("[B%d] %s\n", biblicalNumber++, item.source()));
+                context.append("    📜 Texto: ").append(limitContent(item.content(), 600)).append("\n\n");
             }
+        }
 
-            // Limitar tamanho do contexto se necessário
-            String content = item.content();
-            if (content.length() > 800) {
-                content = content.substring(0, 800) + "...";
+        // Depois mostrar fontes confessionais
+        if (!confessionalSources.isEmpty()) {
+            context.append("⛪ DOCUMENTOS CONFESSIONAIS (subordinados à Escritura):\n\n");
+            int confessionalNumber = 1;
+            for (ContextItem item : confessionalSources) {
+                context.append(String.format("[C%d] %s\n", confessionalNumber++, item.source()));
+
+                if (item.question() != null && !item.question().isEmpty()) {
+                    context.append("    📝 Pergunta: ").append(item.question()).append("\n");
+                }
+
+                context.append("    📖 Conteúdo: ").append(limitContent(item.content(), 500)).append("\n");
+                context.append("    🎯 Relevância: ").append(
+                        String.format("%.1f%%", item.similarityScore() * 100)
+                ).append("\n\n");
             }
-
-            context.append("    📖 Conteúdo: ").append(content).append("\n");
-            context.append("    🎯 Relevância: ").append(
-                    String.format("%.1f%%", item.similarityScore() * 100)
-            ).append("\n\n");
         }
 
         return String.format("""
-        Você é um assistente teológico especialista na Fé Reformada, com profundo conhecimento dos documentos de Westminster e das Institutas de Calvino.
-        
-        INSTRUÇÕES IMPORTANTES:
-        1. Responda SEMPRE baseando-se no contexto fornecido abaixo.
-        2. Cite as fontes usando [número] ao referenciar informações específicas.
-        3. Se o contexto não contiver informação suficiente, indique isso claramente.
-        4. Use um tom professoral, mas acessível e didático.
-        5. Estruture sua resposta de forma clara, com parágrafos bem definidos.
-        6. Ao final, sempre inclua um breve resumo ou aplicação prática.
-        
-        %s
-        
-        PERGUNTA DO USUÁRIO:
-        %s
-        
-        RESPOSTA:
-        """, context.toString(), question);
+                Você é um assistente teológico reformado que segue rigorosamente o princípio SOLA SCRIPTURA.
+                
+                PRINCÍPIOS FUNDAMENTAIS:
+                1. A Escritura é a autoridade suprema e infalível em questões de fé e prática.
+                2. Os documentos confessionais (Westminster, Calvino) são subordinados à Escritura.
+                3. SEMPRE priorize e cite primeiro as referências bíblicas [B1, B2, etc.].
+                4. Use os documentos confessionais [C1, C2, etc.] para explicar e sistematizar o ensino bíblico.
+                5. Se houver conflito, a Escritura prevalece sobre qualquer documento humano.
+                
+                INSTRUÇÕES ESPECÍFICAS:
+                - Comece sua resposta com a base bíblica quando disponível
+                - Cite as fontes usando [B1] para bíblicas e [C1] para confessionais
+                - Explique como os documentos confessionais confirmam/sistematizam o ensino bíblico
+                - Use tom professoral, mas sempre reverente à Palavra de Deus
+                - Termine com aplicação prática baseada na Escritura
+                
+                %s
+                
+                PERGUNTA DO USUÁRIO:
+                %s
+                
+                RESPOSTA (priorizando Sola Scriptura):
+                """, context.toString(), question);
+    }
+
+    private String limitContent(String content, int maxLength) {
+        if (content.length() <= maxLength) {
+            return content;
+        }
+        return content.substring(0, maxLength) + "...";
     }
 
     // ===== MÉTODOS AUXILIARES EXISTENTES =====
