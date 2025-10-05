@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 public class GeminiApiClient {
@@ -55,4 +56,22 @@ public class GeminiApiClient {
         }
     }
 
+    public List<PGvector> generateEmbeddingsInBatch(List<String> texts) {
+        if (texts == null || texts.isEmpty()) {
+            return List.of();
+        }
+        logger.info("Gerando embeddings em lote para {} textos...", texts.size());
+        try {
+            // 1. O Spring AI chama a API e retorna uma lista de vetores (List<float[]>)
+            List<float[]> batchEmbeddings = embeddingModel.embed(texts);
+
+            // 2. Convertemos cada float[] em um objeto PGvector
+            return batchEmbeddings.stream()
+                    .map(PGvector::new) // Referência de método para new PGvector(floatArray)
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            logger.error("Erro ao chamar a API para gerar embeddings em lote.", e);
+            return List.of();
+        }
+    }
 }

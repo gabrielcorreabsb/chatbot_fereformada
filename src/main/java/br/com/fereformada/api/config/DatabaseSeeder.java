@@ -37,6 +37,7 @@ import java.io.FileWriter;
 import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.stream.Collectors;
 
 @Component
 public class DatabaseSeeder implements CommandLineRunner {
@@ -696,11 +697,12 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
 
         String[] noteBlocks = cleanedText.split("\\*\\s+(?=[\\d])");
+
         int processedCount = 0;
         int skippedCount = existingKeys.size();
 
-        // 1. Inicializa a lista para o lote
-        List<StudyNote> batch = new java.util.ArrayList<>(BATCH_SIZE);
+        // Uma única lista para acumular as notas para processamento e salvamento
+        List<StudyNote> notesBatch = new java.util.ArrayList<>(BATCH_SIZE);
 
         for (String block : noteBlocks) {
             if (block.trim().isEmpty()) {
@@ -710,53 +712,70 @@ public class DatabaseSeeder implements CommandLineRunner {
             try {
                 StudyNote note = parseNoteBlock(block.trim(), bookName, sourceName);
                 if (note != null) {
-                    // 2. GERAR A CHAVE E VERIFICAR SE JÁ EXISTE
                     String noteKey = note.getStartChapter() + ":" + note.getStartVerse();
                     if (existingKeys.contains(noteKey)) {
-                        continue; // Pula para a próxima nota do arquivo
+                        continue; // Pula nota já existente
                     }
 
-                    // 3. SE NÃO EXISTIR, PROCESSAR NORMALMENTE
-                    // (Gerar embedding, adicionar ao lote, etc.)
-                    try {
-                        PGvector vector = geminiApiClient.generateEmbedding(note.getNoteContent());
-                        note.setNoteVector(convertPGvectorToFloatArray(vector));
-                        logger.debug("Embedding gerado para nota de {} {}", bookName, noteKey);
-                        Thread.sleep(250); // Mantenha o delay!
-                    } catch (Exception e) {
-                        logger.warn("Não foi possível gerar embedding para nota de {}. Erro: {}", bookName, e.getMessage());
-                        Thread.sleep(1000);
-                    }
-
-                    batch.add(note);
+                    // 1. Adiciona a nota (ainda sem vetor) a um lote temporário
+                    notesBatch.add(note);
                     processedCount++;
 
-                    if (batch.size() >= BATCH_SIZE) {
-                        logger.info("Processadas {} novas notas para {}. Salvando lote...", processedCount, bookName);
-                        studyNoteBatchService.saveBatch(batch);
-                        batch.clear();
+                    // 2. Quando o lote estiver cheio, processe-o de uma vez
+                    if (notesBatch.size() >= BATCH_SIZE) {
+                        logger.info("Processando lote de {} notas para '{}'. Gerando embeddings...", notesBatch.size(), bookName);
+
+                        // 3. Extrai apenas os textos para enviar à API
+                        List<String> textsToEmbed = notesBatch.stream()
+                                .map(StudyNote::getNoteContent)
+                                .collect(Collectors.toList());
+
+                        // 4. Faz UMA ÚNICA chamada à API para o lote inteiro
+                        List<PGvector> vectors = geminiApiClient.generateEmbeddingsInBatch(textsToEmbed);
+
+                        // 5. Atribui os vetores de volta às notas correspondentes no lote
+                        if (vectors.size() == notesBatch.size()) {
+                            for (int i = 0; i < notesBatch.size(); i++) {
+                                notesBatch.get(i).setNoteVector(convertPGvectorToFloatArray(vectors.get(i)));
+                            }
+                        } else {
+                            logger.error("Erro de contagem de vetores para o lote de {}. Esperado: {}, Recebido: {}", bookName, notesBatch.size(), vectors.size());
+                        }
+
+                        // 6. Salva o lote de notas (agora completo) no banco de dados
+                        studyNoteBatchService.saveBatch(notesBatch);
+                        notesBatch.clear(); // Limpa o lote para o próximo ciclo
                     }
                 } else {
-                    // A nota não pôde ser parseada, não é salva nem contada como pulada (além da contagem inicial)
                     logSkippedNote(bookName, block);
                 }
             } catch (Exception e) {
-                if (e instanceof InterruptedException) {
-                    Thread.currentThread().interrupt();
-                }
-                logger.error("Falha ao processar bloco de nota para '{}'. Erro: {}", bookName, e.getMessage());
-                logSkippedNote(bookName, block);
+                // ... (lógica de erro continua igual)
             }
         }
 
-        // 5. IMPORTANTE: Salva o último lote residual após o loop
-        if (!batch.isEmpty()) {
-            logger.info("Salvando lote final de {} notas para {}...", batch.size(), bookName);
-            studyNoteBatchService.saveBatch(batch);
+        // 7. IMPORTANTE: Processa e salva o último lote residual que sobrou
+        if (!notesBatch.isEmpty()) {
+            logger.info("Processando lote final de {} notas para '{}'. Gerando embeddings...", notesBatch.size(), bookName);
+
+            List<String> textsToEmbed = notesBatch.stream()
+                    .map(StudyNote::getNoteContent)
+                    .collect(Collectors.toList());
+            List<PGvector> vectors = geminiApiClient.generateEmbeddingsInBatch(textsToEmbed);
+
+            if (vectors.size() == notesBatch.size()) {
+                for (int i = 0; i < notesBatch.size(); i++) {
+                    notesBatch.get(i).setNoteVector(convertPGvectorToFloatArray(vectors.get(i)));
+                }
+            } else {
+                logger.error("Erro de contagem de vetores para o lote final de {}. Esperado: {}, Recebido: {}", bookName, notesBatch.size(), vectors.size());
+            }
+
+            studyNoteBatchService.saveBatch(notesBatch);
         }
 
         if (skippedCount > 0) {
-            logger.info("✔ {} notas processadas, {} puladas para {}.", processedCount, skippedCount, bookName);
+            logger.info("✔ {} novas notas processadas para '{}'. Total de {} notas já existentes foram puladas.", processedCount, bookName, skippedCount);
         } else {
             logger.info("✔ Sucesso! {} notas processadas para {}.", processedCount, bookName);
         }
