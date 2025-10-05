@@ -7,6 +7,7 @@ import br.com.fereformada.api.model.Topic;
 import br.com.fereformada.api.model.Work;
 import br.com.fereformada.api.repository.*;
 import br.com.fereformada.api.service.ChunkingService;
+import br.com.fereformada.api.service.StudyNoteBatchService;
 import br.com.fereformada.api.service.TaggingService;
 import com.pgvector.PGvector;
 import org.apache.pdfbox.Loader;
@@ -48,6 +49,8 @@ public class DatabaseSeeder implements CommandLineRunner {
             "Obadias", "Filemom", "2 João", "3 João", "Judas"
     );
 
+    private final StudyNoteBatchService studyNoteBatchService;
+    private static final int BATCH_SIZE = 50;
     private final AuthorRepository authorRepository;
     private final WorkRepository workRepository;
     private final TopicRepository topicRepository;
@@ -56,13 +59,12 @@ public class DatabaseSeeder implements CommandLineRunner {
     private final ChunkingService chunkingService;
     private final TaggingService taggingService;
     private final GeminiApiClient geminiApiClient;
-    private final StudyNoteRepository studyNoteRepository; // <-- NOVO
-
+    private final StudyNoteRepository studyNoteRepository;
 
     public DatabaseSeeder(AuthorRepository authorRepository, WorkRepository workRepository,
                           TopicRepository topicRepository, ContentChunkRepository contentChunkRepository,
                           ResourceLoader resourceLoader, ChunkingService chunkingService,
-                          TaggingService taggingService, GeminiApiClient geminiApiClient, StudyNoteRepository studyNoteRepository) {
+                          TaggingService taggingService, GeminiApiClient geminiApiClient, StudyNoteRepository studyNoteRepository, StudyNoteBatchService studyNoteBatchService) {
         this.authorRepository = authorRepository;
         this.workRepository = workRepository;
         this.topicRepository = topicRepository;
@@ -72,10 +74,11 @@ public class DatabaseSeeder implements CommandLineRunner {
         this.taggingService = taggingService;
         this.geminiApiClient = geminiApiClient;
         this.studyNoteRepository = studyNoteRepository;
+        this.studyNoteBatchService = studyNoteBatchService;
+
     }
 
     @Override
-    @Transactional
     public void run(String... args) throws Exception {
         logger.info("🔍 Verificando status do banco de dados...");
 
@@ -682,12 +685,18 @@ public class DatabaseSeeder implements CommandLineRunner {
         int processedCount = 0;
         int skippedCount = 0;
 
+        // 1. Inicializa a lista para o lote
+        List<StudyNote> batch = new java.util.ArrayList<>(BATCH_SIZE);
+
         for (String block : noteBlocks) {
-            if (block.trim().isEmpty()) continue;
+            if (block.trim().isEmpty()) {
+                continue;
+            }
 
             try {
                 StudyNote note = parseNoteBlock(block.trim(), bookName, sourceName);
                 if (note != null) {
+                    // 2. Gera o embedding ANTES de adicionar ao lote
                     try {
                         PGvector vector = geminiApiClient.generateEmbedding(note.getNoteContent());
                         note.setNoteVector(convertPGvectorToFloatArray(vector));
@@ -696,17 +705,23 @@ public class DatabaseSeeder implements CommandLineRunner {
                     } catch (Exception e) {
                         logger.warn("Não foi possível gerar embedding para nota de {}. Erro: {}",
                                 bookName, e.getMessage());
+                        // Você pode decidir pular a nota se o embedding for crucial
+                        // ou continuar com o vetor nulo.
                     }
 
-                    studyNoteRepository.save(note);
+                    // 3. Adiciona a nota COMPLETA (com vetor) ao lote
+                    batch.add(note);
                     processedCount++;
 
-                    if (processedCount % 10 == 0) {
-                        logger.info("Processadas {} notas para {}...", processedCount, bookName);
+                    // 4. Verifica se o lote está cheio para salvá-lo
+                    if (batch.size() >= BATCH_SIZE) {
+                        logger.info("Processadas {} notas para {}. Salvando lote...", processedCount, bookName);
+                        studyNoteBatchService.saveBatch(batch);
+                        batch.clear(); // Limpa o lote para o próximo ciclo
                     }
+
                 } else {
                     skippedCount++;
-                    // Log da nota não processada
                     logSkippedNote(bookName, block);
                 }
             } catch (Exception e) {
@@ -717,11 +732,10 @@ public class DatabaseSeeder implements CommandLineRunner {
             }
         }
 
-        // Log resumo do livro
-        if (notesLogWriter != null) {
-            notesLogWriter.println("Total processadas: " + processedCount);
-            notesLogWriter.println("Total puladas: " + skippedCount);
-            notesLogWriter.flush();
+        // 5. IMPORTANTE: Salva o último lote residual após o loop
+        if (!batch.isEmpty()) {
+            logger.info("Salvando lote final de {} notas para {}...", batch.size(), bookName);
+            studyNoteBatchService.saveBatch(batch);
         }
 
         if (skippedCount > 0) {
