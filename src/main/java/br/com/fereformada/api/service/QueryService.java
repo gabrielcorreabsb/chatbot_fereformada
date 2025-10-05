@@ -31,7 +31,7 @@ public class QueryService {
     private static final int MAX_EMBEDDING_CACHE_SIZE = 500;
 
     // ===== STOP WORDS EM PORTUGUÊS =====
-    private static final Set<String> STOP_WORDS = Set.of(
+    private static final Set<String> STOP_WORDS = java.util.Set.of(
             "o", "a", "os", "as", "um", "uma", "de", "da", "do", "dos", "das",
             "em", "na", "no", "nas", "nos", "por", "para", "com", "sem", "sob",
             "que", "qual", "quais", "quando", "onde", "como", "e", "ou", "mas",
@@ -189,38 +189,67 @@ public class QueryService {
         List<ContextItem> results = new ArrayList<>();
 
         try {
-            // Pegar a keyword mais relevante
-            String mainKeyword = keywords.stream()
-                    .max(Comparator.comparingInt(String::length))
-                    .orElse("");
+            List<String> topKeywords = keywords.stream()
+                    .filter(k -> k.length() > 3)
+                    .filter(k -> !STOP_WORDS.contains(k))
+                    .sorted(Comparator.comparingInt(String::length).reversed())
+                    .limit(5)
+                    .collect(Collectors.toList());
 
-            if (mainKeyword.isEmpty()) {
+            if (topKeywords.isEmpty()) {
+                logger.debug("Nenhuma keyword válida encontrada");
                 return Collections.emptyList();
             }
 
-            logger.debug("Buscando por keyword principal: '{}'", mainKeyword);
+            logger.debug("🔍 Buscando por {} keywords: {}", topKeywords.size(), topKeywords);
 
-            // *** MUDANÇA: Usar PageRequest em vez de int limit ***
             Pageable limit3 = PageRequest.of(0, 3);
+            Set<Long> processedChunkIds = new HashSet<>();
+            Set<Long> processedNoteIds = new HashSet<>();
 
-            List<ContentChunk> chunks = contentChunkRepository.searchByKeywords(mainKeyword, limit3);
-            List<StudyNote> notes = studyNoteRepository.searchByKeywords(mainKeyword, limit3);
+            for (String keyword : topKeywords) {
+                try {
+                    logger.debug("  → Buscando por: '{}'", keyword);
 
-            // Converter para ContextItems
-            for (ContentChunk chunk : chunks) {
-                double score = calculateKeywordScore(chunk.getContent(), keywords);
-                results.add(ContextItem.from(chunk, score));
+                    // ✅ NOVO: Try-catch individual para cada keyword
+                    try {
+                        List<ContentChunk> chunks = contentChunkRepository.searchByKeywords(keyword, limit3);
+                        for (ContentChunk chunk : chunks) {
+                            if (!processedChunkIds.contains(chunk.getId())) {
+                                double score = calculateEnhancedKeywordScore(chunk.getContent(), keywords, keyword);
+                                results.add(ContextItem.from(chunk, score));
+                                processedChunkIds.add(chunk.getId());
+                            }
+                        }
+                    } catch (Exception chunkError) {
+                        logger.warn("  ⚠️ Erro ao buscar chunks para '{}': {}", keyword, chunkError.getMessage());
+                    }
+
+                    try {
+                        List<StudyNote> notes = studyNoteRepository.searchByKeywords(keyword, limit3);
+                        for (StudyNote note : notes) {
+                            if (!processedNoteIds.contains(note.getId())) {
+                                double score = calculateEnhancedKeywordScore(note.getNoteContent(), keywords, keyword);
+                                results.add(ContextItem.from(note, score));
+                                processedNoteIds.add(note.getId());
+                            }
+                        }
+                    } catch (Exception noteError) {
+                        logger.warn("  ⚠️ Erro ao buscar notas para '{}': {}", keyword, noteError.getMessage());
+                    }
+
+                } catch (Exception keywordError) {
+                    logger.warn("  ❌ Erro geral para keyword '{}': {}", keyword, keywordError.getMessage());
+                    continue; // Continua com próxima keyword
+                }
             }
 
-            for (StudyNote note : notes) {
-                double score = calculateKeywordScore(note.getNoteContent(), keywords);
-                results.add(ContextItem.from(note, score));
-            }
-
-            logger.debug("Keyword search encontrou {} chunks e {} notas", chunks.size(), notes.size());
+            logger.debug("✅ Keyword search encontrou {} itens únicos", results.size());
 
         } catch (Exception e) {
-            logger.error("Erro na busca por keywords: {}", e.getMessage(), e);
+            logger.warn("❌ Erro na busca por keywords (usando apenas busca vetorial): {}", e.getMessage());
+            // Retorna lista vazia - sistema continua só com busca vetorial
+            return Collections.emptyList();
         }
 
         return results;
@@ -232,23 +261,49 @@ public class QueryService {
                 .replaceAll("[?!.,;:]", "")
                 .split("\\s+");
 
+        // 1. Adicionar palavras principais
         for (String word : words) {
             // Pular stop words e palavras muito curtas
             if (word.length() > 2 && !STOP_WORDS.contains(word)) {
                 keywords.add(word);
 
-                // Adicionar sinônimos teológicos se aplicável
+                // 2. Adicionar sinônimos teológicos se aplicável
                 if (THEOLOGICAL_SYNONYMS.containsKey(word)) {
-                    keywords.addAll(THEOLOGICAL_SYNONYMS.get(word));
+                    List<String> synonyms = THEOLOGICAL_SYNONYMS.get(word);
+                    // Adicionar apenas os 3 sinônimos mais importantes
+                    keywords.addAll(synonyms.stream().limit(3).collect(Collectors.toList()));
                 }
             }
         }
 
-        // Adicionar bigrams importantes (ex: "espírito santo")
+        // 3. Adicionar frases importantes
         addImportantPhrases(question.toLowerCase(), keywords);
 
-        logger.debug("Keywords extraídas: {}", keywords);
+        // 4. Priorizar termos teológicos específicos
+        prioritizeTheologicalTerms(keywords, question.toLowerCase());
+
+        logger.debug("🔤 Keywords extraídas ({}): {}", keywords.size(),
+                keywords.stream().limit(8).collect(Collectors.toList()));
+
         return keywords;
+    }
+
+    /**
+     * Dá prioridade a termos teológicos importantes
+     */
+    private void prioritizeTheologicalTerms(Set<String> keywords, String question) {
+        // Termos que sempre devem ser incluídos se aparecerem na pergunta
+        String[] priorityTerms = {
+                "deus", "cristo", "jesus", "espírito", "santo", "bíblia", "escritura",
+                "salvação", "graça", "fé", "pecado", "justificação", "santificação",
+                "eleição", "predestinação", "batismo", "ceia", "igreja", "oração"
+        };
+
+        for (String term : priorityTerms) {
+            if (question.contains(term) && !keywords.contains(term)) {
+                keywords.add(term);
+            }
+        }
     }
 
     private void addImportantPhrases(String question, Set<String> keywords) {
@@ -424,14 +479,29 @@ public class QueryService {
 
     private void logRerankedResults(List<ContextItem> results) {
         logger.info("📊 Top {} resultados após reranking:", results.size());
+
+        // Contar por tipo de fonte
+        long biblicalNotes = results.stream().filter(ContextItem::isBiblicalNote).count();
+        long confessional = results.stream().filter(item -> !item.isBiblicalNote()).count();
+
+        logger.info("  📖 Fontes bíblicas: {}, ⛪ Fontes confessionais: {}", biblicalNotes, confessional);
+
+        // Mostrar top 3 com mais detalhes
         for (int i = 0; i < Math.min(3, results.size()); i++) {
             ContextItem item = results.get(i);
-            logger.info("  {}. [Score: {:.3f}] {}",
-                    i + 1,
-                    item.similarityScore(),
-                    item.source()
-            );
+            String type = item.isBiblicalNote() ? "📖" : "⛪";
+            logger.info("  {}. {} [Score: {:.3f}] {}",
+                    i + 1, type, item.similarityScore(), item.source());
         }
+
+        // Log da qualidade geral
+        double avgScore = results.stream()
+                .mapToDouble(ContextItem::similarityScore)
+                .average()
+                .orElse(0.0);
+
+        String qualityEmoji = avgScore > 0.8 ? "🔥" : avgScore > 0.6 ? "✅" : "⚠️";
+        logger.info("  {} Qualidade média: {:.1f}%", qualityEmoji, avgScore * 100);
     }
 
     // ===== BUSCA VETORIAL OTIMIZADA =====
@@ -627,5 +697,59 @@ public class QueryService {
         stats.put("responseCacheSize", responseCache.size());
         stats.put("embeddingCacheSize", embeddingCache.size());
         return stats;
+    }
+
+    private double calculateEnhancedKeywordScore(String content, Set<String> allKeywords, String triggerKeyword) {
+        if (content == null || content.isEmpty()) {
+            return 0.0;
+        }
+
+        String contentLower = content.toLowerCase();
+
+        // 1. Contar matches únicos
+        long uniqueMatches = allKeywords.stream()
+                .filter(contentLower::contains)
+                .count();
+
+        // 2. Score base (proporção de keywords encontradas)
+        double baseScore = (double) uniqueMatches / allKeywords.size();
+
+        // 3. Boost para keyword que triggou a busca
+        double triggerBoost = contentLower.contains(triggerKeyword.toLowerCase()) ? 1.2 : 1.0;
+
+        // 4. Boost para densidade de keywords (quantas vezes aparecem)
+        long totalMatches = allKeywords.stream()
+                .mapToLong(keyword -> countOccurrences(contentLower, keyword.toLowerCase()))
+                .sum();
+
+        double densityBoost = 1.0 + (totalMatches * 0.05); // 5% boost por ocorrência extra
+        densityBoost = Math.min(densityBoost, 2.0); // Máximo 2x boost
+
+        // 5. Score final
+        double finalScore = baseScore * triggerBoost * densityBoost;
+
+        logger.debug("    📊 Score para '{}': base={:.2f}, trigger={:.2f}, density={:.2f}, final={:.2f}",
+                triggerKeyword, baseScore, triggerBoost, densityBoost, finalScore);
+
+        return Math.min(finalScore, 1.0); // Máximo 1.0
+    }
+
+    /**
+     * Conta quantas vezes uma palavra aparece no texto
+     */
+    private long countOccurrences(String text, String word) {
+        if (text == null || word == null || word.isEmpty()) {
+            return 0;
+        }
+
+        int count = 0;
+        int index = 0;
+
+        while ((index = text.indexOf(word, index)) != -1) {
+            count++;
+            index += word.length();
+        }
+
+        return count;
     }
 }
