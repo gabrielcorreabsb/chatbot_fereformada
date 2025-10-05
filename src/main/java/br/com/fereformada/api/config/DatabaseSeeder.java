@@ -36,6 +36,11 @@ public class DatabaseSeeder implements CommandLineRunner {
 
     private static final Logger logger = LoggerFactory.getLogger(DatabaseSeeder.class);
 
+
+    private static final java.util.Set<String> SINGLE_CHAPTER_BOOKS = java.util.Set.of(
+            "Obadias", "Filemom", "2 João", "3 João", "Judas"
+    );
+
     private final AuthorRepository authorRepository;
     private final WorkRepository workRepository;
     private final TopicRepository topicRepository;
@@ -542,7 +547,7 @@ public class DatabaseSeeder implements CommandLineRunner {
 
     private String cleanChunkText(String rawChunkContent) {
         String cleaned = rawChunkContent.replaceAll("(?m)^\\s*\\d+\\s*$", "");
-        cleaned = cleaned.replaceAll("(?<!\n)\r?\n(?!\n)", " ");
+        cleaned = cleaned.replaceAll("[“”]", "\"");
         return cleaned.replaceAll(" +", " ").trim();
     }
 
@@ -558,11 +563,11 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
     }
 
-    private void loadGenevaStudyNotes() throws IOException {
+    private void loadGenevaStudyNotes() {
         final String SOURCE_NAME = "Bíblia de Genebra";
         logger.info("Verificando e carregando notas da '{}' livro por livro...", SOURCE_NAME);
 
-        // Lista dos nomes dos arquivos do Antigo Testamento
+        // --- CORREÇÃO 1: Listas com nomes de arquivo no padrão que você quer ---
         List<String> otBooks = List.of(
                 "Gênesis", "Êxodo", "Levítico", "Números", "Deuteronômio", "Josué", "Juízes", "Rute",
                 "1_Samuel", "2_Samuel", "1_Reis", "2_Reis", "1_Crônicas", "2_Crônicas", "Esdras", "Neemias", "Ester", "Jó",
@@ -570,8 +575,6 @@ public class DatabaseSeeder implements CommandLineRunner {
                 "Lamentações_de_jeremias", "Ezequiel", "Daniel", "Oséias", "Joel", "Amós", "Obadias",
                 "Jonas", "Miquéias", "Naum", "Habacuque", "Sofonias", "Ageu", "Zacarias", "Malaquias"
         );
-
-        // Lista dos nomes dos arquivos do Novo Testamento
         List<String> ntBooks = List.of(
                 "Mateus", "Marcos", "Lucas", "João", "Atos", "Romanos", "1_Coríntios", "2_Coríntios",
                 "Gálatas", "Efésios", "Filipenses", "Colossenses", "1_Tessalonicenses", "2_Tessalonicenses",
@@ -581,34 +584,35 @@ public class DatabaseSeeder implements CommandLineRunner {
 
         int totalNotesLoaded = 0;
         int booksSkipped = 0;
-        List<String> booksToProcess = new java.util.ArrayList<>();
-        booksToProcess.addAll(otBooks.stream().map(b -> "ot/" + b).toList());
-        booksToProcess.addAll(ntBooks.stream().map(b -> "nt/" + b).toList());
 
-        for (String bookPath : booksToProcess) {
-            String[] pathParts = bookPath.split("/");
-            String testament = pathParts[0];
-            String bookFileName = pathParts[1];
+        for (String bookFileName : otBooks) {
             String bookName = bookFileName.replace('_', ' ');
-
-            // --- A LÓGICA PRINCIPAL ESTÁ AQUI ---
             if (studyNoteRepository.countByBook(bookName) > 0) {
-                // Se já existem notas para este livro, pula para o próximo.
                 logger.info("⏭️ Notas para '{}' já existem no banco. Pulando.", bookName);
                 booksSkipped++;
                 continue;
             }
-
-            // Se não existe, processa o arquivo.
-            String filePath = "classpath:data-content/bible-notes/" + testament + "/" + bookFileName + ".txt";
+            String filePath = "classpath:data-content/bible-notes/ot/" + bookFileName + ".txt";
             totalNotesLoaded += processStudyNoteFile(filePath, bookName, SOURCE_NAME);
         }
 
-        logger.info("Carregamento das notas da Bíblia de Genebra finalizado. {} livros pulados, {} novas notas carregadas.", booksSkipped, totalNotesLoaded);
+        for (String bookFileName : ntBooks) {
+            String bookName = bookFileName.replace('_', ' ');
+            if (studyNoteRepository.countByBook(bookName) > 0) {
+                logger.info("⏭️ Notas para '{}' já existem no banco. Pulando.", bookName);
+                booksSkipped++;
+                continue;
+            }
+            String filePath = "classpath:data-content/bible-notes/nt/" + bookFileName + ".txt";
+            totalNotesLoaded += processStudyNoteFile(filePath, bookName, SOURCE_NAME);
+        }
+
+        logger.info("Carregamento das notas finalizado. {} livros pulados, {} novas notas carregadas.", booksSkipped, totalNotesLoaded);
     }
 
     /**
      * Processa um único arquivo de texto de notas, parseia e salva no banco.
+     *
      * @return O número de notas processadas no arquivo.
      */
     private int processStudyNoteFile(String filePath, String bookName, String sourceName) {
@@ -618,58 +622,206 @@ public class DatabaseSeeder implements CommandLineRunner {
         try {
             rawText = extractTextFromTxt(filePath);
         } catch (IOException e) {
-            logger.error("ERRO: Não foi possível ler o arquivo de notas em '{}'. Pulando este livro.", filePath);
-            return 0; // Retorna 0 notas processadas
+            logger.error("ERRO: Não foi possível ler o arquivo '{}'. Verifique se ele existe. Pulando.", filePath);
+            return 0;
         }
 
-        // A primeira linha do arquivo é o título, o resto são as notas.
-        String[] lines = rawText.split("\n", 2);
-        String contentToParse = lines.length > 1 ? lines[1] : "";
+        // Limpar o texto - remover o nome do livro se estiver no início
+        String cleanedText = rawText.trim();
+        if (cleanedText.startsWith(bookName)) {
+            cleanedText = cleanedText.substring(bookName.length()).trim();
+        }
 
-        // Usa a mesma lógica de split do Python: quebra o texto pelo marcador de nota "* "
-        String[] noteBlocks = contentToParse.split("\n\\*\\s+");
+        // Dividir por asterisco seguido de espaço e número OU ponto/dois-pontos
+        // Isso captura tanto "* 1" quanto "* 5.21" quanto "* 5:21"
+        String[] noteBlocks = cleanedText.split("\\*\\s+(?=[\\d])");
         int processedCount = 0;
+        int skippedCount = 0;
 
         for (String block : noteBlocks) {
             if (block.trim().isEmpty()) continue;
 
-            // Regex para capturar a referência (ex: "1.1-2.25") e o resto do conteúdo
-            Pattern pattern = Pattern.compile("^([\\d.:,-]+[\\w-]*)\\s+(.*)", Pattern.DOTALL);
-            Matcher matcher = pattern.matcher(block.trim());
-
-            if (matcher.find()) {
-                String reference = matcher.group(1);
-                String noteContent = matcher.group(2);
-
-                try {
-                    StudyNote note = new StudyNote();
-                    note.setSource(sourceName);
-                    note.setBook(bookName);
-                    note.setNoteContent(cleanChunkText(noteContent));
-
-                    int[] parsedRef = parseReference(reference);
-                    note.setStartChapter(parsedRef[0]);
-                    note.setStartVerse(parsedRef[1]);
-                    note.setEndChapter(parsedRef[2]);
-                    note.setEndVerse(parsedRef[3]);
-
+            try {
+                StudyNote note = parseNoteBlock(block.trim(), bookName, sourceName);
+                if (note != null) {
+                    // Gerar embedding para a nota
                     try {
                         PGvector vector = geminiApiClient.generateEmbedding(note.getNoteContent());
                         note.setNoteVector(convertPGvectorToFloatArray(vector));
+                        logger.debug("Embedding gerado para nota de {} {}:{}",
+                                bookName, note.getStartChapter(), note.getStartVerse());
                     } catch (Exception e) {
-                        logger.warn("Não foi possível gerar embedding para a nota de {}:{}. Erro: {}", bookName, reference, e.getMessage());
+                        logger.warn("Não foi possível gerar embedding para nota de {}. Erro: {}",
+                                bookName, e.getMessage());
                     }
 
                     studyNoteRepository.save(note);
                     processedCount++;
-                } catch (Exception e) {
-                    logger.error("Falha ao processar bloco de nota para '{}'. Referência: '{}'. Erro: {}", bookName, reference, e.getMessage());
+
+                    if (processedCount % 10 == 0) {
+                        logger.info("Processadas {} notas para {}...", processedCount, bookName);
+                    }
+                } else {
+                    skippedCount++;
                 }
+            } catch (Exception e) {
+                logger.error("Falha ao processar bloco de nota para '{}'. Erro: {}", bookName, e.getMessage());
+                logger.debug("Bloco problemático: {}", block.substring(0, Math.min(100, block.length())));
+                skippedCount++;
             }
         }
-        logger.info("✔ Sucesso! {} notas processadas para {}.", processedCount, bookName);
+
+        if (skippedCount > 0) {
+            logger.info("✔ {} notas processadas, {} puladas para {}.", processedCount, skippedCount, bookName);
+        } else {
+            logger.info("✔ Sucesso! {} notas processadas para {}.", processedCount, bookName);
+        }
+
         return processedCount;
     }
+
+    private StudyNote parseNoteBlock(String block, String bookName, String sourceName) {
+        // Regex mais flexível para capturar diferentes formatos de referência
+        // Aceita: "1.1", "1:1", "1.1-3", "1:1-3", "1", "1-3", etc.
+        Pattern pattern = Pattern.compile("^([\\d]+[.:,]?[\\d\\-,:]*?)\\s+(.*)", Pattern.DOTALL);
+        Matcher matcher = pattern.matcher(block);
+
+        if (!matcher.find()) {
+            logger.warn("Formato de nota não reconhecido para {}: {}", bookName,
+                    block.substring(0, Math.min(50, block.length())));
+            return null;
+        }
+
+        String reference = matcher.group(1).trim();
+        String noteContent = matcher.group(2).trim();
+
+        // Se o conteúdo da nota estiver vazio ou muito curto, pular
+        if (noteContent.length() < 10) {
+            logger.debug("Nota muito curta ou vazia para {}: {}", bookName, reference);
+            return null;
+        }
+
+        StudyNote note = new StudyNote();
+        note.setSource(sourceName);
+        note.setBook(bookName);
+        note.setNoteContent(cleanChunkText(noteContent));
+
+        // Parse da referência melhorado
+        try {
+            int[] parsedRef = parseReferenceForStudyNotes(reference, bookName);
+            note.setStartChapter(parsedRef[0]);
+            note.setStartVerse(parsedRef[1]);
+            note.setEndChapter(parsedRef[2]);
+            note.setEndVerse(parsedRef[3]);
+        } catch (Exception e) {
+            logger.warn("Erro ao fazer parse da referência '{}' para {}: {}", reference, bookName, e.getMessage());
+            // Para notas sem referência específica, usar valores padrão
+            note.setStartChapter(1);
+            note.setStartVerse(1);
+            note.setEndChapter(1);
+            note.setEndVerse(1);
+        }
+
+        return note;
+    }
+
+    private int[] parseReferenceForStudyNotes(String reference, String bookName) {
+        int startChapter = 1, startVerse = 1;
+        int endChapter = 1, endVerse = 1;
+
+        try {
+            // Remover espaços e caracteres não numéricos exceto . : , -
+            String cleanRef = reference.replaceAll("\\s+", "");
+
+            // Detectar se a referência usa formato capítulo.versículo ou capítulo:versículo
+            if (cleanRef.contains(".") || cleanRef.contains(":")) {
+                // Formato com capítulo e versículo: "5.21", "5:21", "5.21-23", etc.
+                String[] parts;
+                if (cleanRef.contains("-")) {
+                    // Range: "5.21-23" ou "5.21-6.1"
+                    parts = cleanRef.split("-");
+                    String startRef = parts[0];
+                    String endRef = parts.length > 1 ? parts[1] : startRef;
+
+                    // Parse início
+                    String[] startParts = startRef.split("[.:]");
+                    startChapter = Integer.parseInt(startParts[0]);
+                    startVerse = startParts.length > 1 ? Integer.parseInt(startParts[1]) : 1;
+
+                    // Parse fim
+                    if (endRef.contains(".") || endRef.contains(":")) {
+                        String[] endParts = endRef.split("[.:]");
+                        endChapter = Integer.parseInt(endParts[0]);
+                        endVerse = endParts.length > 1 ? Integer.parseInt(endParts[1]) : 1;
+                    } else {
+                        // Se o fim é apenas um número, assumir que é versículo do mesmo capítulo
+                        endChapter = startChapter;
+                        endVerse = Integer.parseInt(endRef);
+                    }
+                } else if (cleanRef.contains(",")) {
+                    // Lista: "5.21,22" - tratar como range
+                    parts = cleanRef.split(",");
+                    String[] startParts = parts[0].split("[.:]");
+                    startChapter = Integer.parseInt(startParts[0]);
+                    startVerse = startParts.length > 1 ? Integer.parseInt(startParts[1]) : 1;
+
+                    // Para o fim, pegar o último item da lista
+                    String lastRef = parts[parts.length - 1];
+                    if (lastRef.contains(".") || lastRef.contains(":")) {
+                        String[] endParts = lastRef.split("[.:]");
+                        endChapter = Integer.parseInt(endParts[0]);
+                        endVerse = endParts.length > 1 ? Integer.parseInt(endParts[1]) : 1;
+                    } else {
+                        endChapter = startChapter;
+                        endVerse = Integer.parseInt(lastRef);
+                    }
+                } else {
+                    // Versículo único: "5.21" ou "5:21"
+                    parts = cleanRef.split("[.:]");
+                    startChapter = Integer.parseInt(parts[0]);
+                    startVerse = parts.length > 1 ? Integer.parseInt(parts[1]) : 1;
+                    endChapter = startChapter;
+                    endVerse = startVerse;
+                }
+            } else {
+                // Formato sem capítulo (para livros de capítulo único ou referências só de versículo)
+                if (SINGLE_CHAPTER_BOOKS.contains(bookName)) {
+                    startChapter = 1;
+                    endChapter = 1;
+
+                    if (cleanRef.contains("-")) {
+                        // Range: "1-3", "7-11"
+                        String[] parts = cleanRef.split("-");
+                        startVerse = Integer.parseInt(parts[0]);
+                        endVerse = parts.length > 1 && !parts[1].isEmpty() ?
+                                Integer.parseInt(parts[1]) : startVerse;
+                    } else if (cleanRef.contains(",")) {
+                        // Lista: "12,13"
+                        String[] parts = cleanRef.split(",");
+                        startVerse = Integer.parseInt(parts[0]);
+                        endVerse = Integer.parseInt(parts[parts.length - 1]);
+                    } else {
+                        // Versículo único: "1", "7"
+                        startVerse = Integer.parseInt(cleanRef);
+                        endVerse = startVerse;
+                    }
+                } else {
+                    // Para outros livros, número sozinho pode ser capítulo
+                    startChapter = Integer.parseInt(cleanRef.replaceAll("[^\\d]", ""));
+                    endChapter = startChapter;
+                    startVerse = 1;
+                    endVerse = 999; // Indicador de "capítulo inteiro"
+                }
+            }
+
+        } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+            logger.debug("Usando valores padrão para referência complexa: {}", reference);
+            // Valores padrão já definidos no início
+        }
+
+        return new int[]{startChapter, startVerse, endChapter, endVerse};
+    }
+
 
     /**
      * Novo método auxiliar para ler arquivos de texto do classpath.
@@ -681,37 +833,45 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
     }
 
-    private int[] parseReference(String reference) {
-        // Limpa a string de referência de quaisquer caracteres que não sejam dígitos, pontos ou hífens.
-        String cleanReference = reference.replaceAll("[^\\d.\\-]", "");
+    private int[] parseReference(String reference, String bookName) {
+        // Trata referências com vírgula (ex: "1,2") pegando apenas a primeira parte
+        String cleanReference = reference.split(",")[0].trim();
 
         String[] parts = cleanReference.split("-");
-        String[] startRef = parts[0].split("\\.");
+        String startPart = parts[0];
 
-        // Verificação de segurança para referências malformadas
-        if (startRef.length < 2) {
-            throw new IllegalArgumentException("Referência inicial malformada: " + reference);
+        int startChapter, startVerse;
+
+        if (startPart.contains(".")) {
+            // Caso padrão: "1.1", "1.25", etc.
+            String[] startRef = startPart.split("\\.");
+            startChapter = Integer.parseInt(startRef[0]);
+            startVerse = Integer.parseInt(startRef[1]);
+        } else {
+            // Caso de número único: "1", "14", etc.
+            if (SINGLE_CHAPTER_BOOKS.contains(bookName)) {
+                // Para livros de capítulo único, o número é o versículo.
+                startChapter = 1;
+                startVerse = Integer.parseInt(startPart);
+            } else {
+                // Para outros livros, assumimos que é uma referência ao capítulo inteiro.
+                // Usamos versículo 0 como um marcador para "capítulo inteiro".
+                startChapter = Integer.parseInt(startPart);
+                startVerse = 0;
+            }
         }
-
-        int startChapter = Integer.parseInt(startRef[0]);
-        int startVerse = Integer.parseInt(startRef[1]);
 
         int endChapter = startChapter;
         int endVerse = startVerse;
 
         if (parts.length > 1) {
             String endPart = parts[1];
-
-            if (endPart.isEmpty()){
-                // Lida com casos como "1.1-" que podem vir do PDF
+            if (endPart.isEmpty()) {
                 return new int[]{startChapter, startVerse, endChapter, endVerse};
             }
 
             if (endPart.contains(".")) {
                 String[] endRef = endPart.split("\\.");
-                if (endRef.length < 2) {
-                    throw new IllegalArgumentException("Referência final malformada: " + reference);
-                }
                 endChapter = Integer.parseInt(endRef[0]);
                 endVerse = Integer.parseInt(endRef[1]);
             } else {
