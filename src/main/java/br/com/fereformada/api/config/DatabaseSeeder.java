@@ -31,11 +31,18 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import java.io.FileWriter;
+import java.io.PrintWriter;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
 @Component
 public class DatabaseSeeder implements CommandLineRunner {
 
     private static final Logger logger = LoggerFactory.getLogger(DatabaseSeeder.class);
 
+
+    private PrintWriter notesLogWriter;
 
     private static final java.util.Set<String> SINGLE_CHAPTER_BOOKS = java.util.Set.of(
             "Obadias", "Filemom", "2 João", "3 João", "Judas"
@@ -567,24 +574,41 @@ public class DatabaseSeeder implements CommandLineRunner {
         final String SOURCE_NAME = "Bíblia de Genebra";
         logger.info("Verificando e carregando notas da '{}' livro por livro...", SOURCE_NAME);
 
-        // --- CORREÇÃO 1: Listas com nomes de arquivo no padrão que você quer ---
+        // Inicializar o arquivo de log
+        try {
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+            String logFileName = "notes_processing_log_" + timestamp + ".txt";
+            notesLogWriter = new PrintWriter(new FileWriter(logFileName, true));
+            notesLogWriter.println("=== LOG DE PROCESSAMENTO DE NOTAS BÍBLICAS ===");
+            notesLogWriter.println("Iniciado em: " + LocalDateTime.now());
+            notesLogWriter.println("================================================\n");
+            notesLogWriter.flush();
+            logger.info("📝 Arquivo de log criado: {}", logFileName);
+        } catch (IOException e) {
+            logger.error("Erro ao criar arquivo de log: {}", e.getMessage());
+        }
+
         List<String> otBooks = List.of(
                 "Gênesis", "Êxodo", "Levítico", "Números", "Deuteronômio", "Josué", "Juízes", "Rute",
-                "1_Samuel", "2_Samuel", "1_Reis", "2_Reis", "1_Crônicas", "2_Crônicas", "Esdras", "Neemias", "Ester", "Jó",
-                "Salmos", "Provérbios", "Eclesiastes", "Cantares_de_salomão", "Isaías", "Jeremias",
-                "Lamentações_de_jeremias", "Ezequiel", "Daniel", "Oséias", "Joel", "Amós", "Obadias",
-                "Jonas", "Miquéias", "Naum", "Habacuque", "Sofonias", "Ageu", "Zacarias", "Malaquias"
+                "1_Samuel", "2_Samuel", "1_Reis", "2_Reis", "1_Crônicas", "2_Crônicas", "Esdras",
+                "Neemias", "Ester", "Jó", "Salmos", "Provérbios", "Eclesiastes", "Cantares_de_salomão",
+                "Isaías", "Jeremias", "Lamentações_de_jeremias", "Ezequiel", "Daniel", "Oséias",
+                "Joel", "Amós", "Obadias", "Jonas", "Miquéias", "Naum", "Habacuque", "Sofonias",
+                "Ageu", "Zacarias", "Malaquias"
         );
+
         List<String> ntBooks = List.of(
                 "Mateus", "Marcos", "Lucas", "João", "Atos", "Romanos", "1_Coríntios", "2_Coríntios",
-                "Gálatas", "Efésios", "Filipenses", "Colossenses", "1_Tessalonicenses", "2_Tessalonicenses",
-                "1_Timóteo", "2_Timóteo", "Tito", "Filemom", "Hebreus", "Tiago", "1_Pedro", "2_Pedro",
-                "1_João", "2_João", "3_João", "Judas", "Apocalipse"
+                "Gálatas", "Efésios", "Filipenses", "Colossenses", "1_Tessalonicenses",
+                "2_Tessalonicenses", "1_Timóteo", "2_Timóteo", "Tito", "Filemom", "Hebreus",
+                "Tiago", "1_Pedro", "2_Pedro", "1_João", "2_João", "3_João", "Judas", "Apocalipse"
         );
 
         int totalNotesLoaded = 0;
+        int totalNotesSkipped = 0;
         int booksSkipped = 0;
 
+        // Processar OT
         for (String bookFileName : otBooks) {
             String bookName = bookFileName.replace('_', ' ');
             if (studyNoteRepository.countByBook(bookName) > 0) {
@@ -593,9 +617,12 @@ public class DatabaseSeeder implements CommandLineRunner {
                 continue;
             }
             String filePath = "classpath:data-content/bible-notes/ot/" + bookFileName + ".txt";
-            totalNotesLoaded += processStudyNoteFile(filePath, bookName, SOURCE_NAME);
+            int[] results = processStudyNoteFile(filePath, bookName, SOURCE_NAME);
+            totalNotesLoaded += results[0];
+            totalNotesSkipped += results[1];
         }
 
+        // Processar NT
         for (String bookFileName : ntBooks) {
             String bookName = bookFileName.replace('_', ' ');
             if (studyNoteRepository.countByBook(bookName) > 0) {
@@ -604,36 +631,53 @@ public class DatabaseSeeder implements CommandLineRunner {
                 continue;
             }
             String filePath = "classpath:data-content/bible-notes/nt/" + bookFileName + ".txt";
-            totalNotesLoaded += processStudyNoteFile(filePath, bookName, SOURCE_NAME);
+            int[] results = processStudyNoteFile(filePath, bookName, SOURCE_NAME);
+            totalNotesLoaded += results[0];
+            totalNotesSkipped += results[1];
         }
 
-        logger.info("Carregamento das notas finalizado. {} livros pulados, {} novas notas carregadas.", booksSkipped, totalNotesLoaded);
+        // Finalizar log
+        if (notesLogWriter != null) {
+            notesLogWriter.println("\n=== RESUMO FINAL ===");
+            notesLogWriter.println("Total de notas processadas: " + totalNotesLoaded);
+            notesLogWriter.println("Total de notas puladas: " + totalNotesSkipped);
+            notesLogWriter.println("Total de livros pulados: " + booksSkipped);
+            notesLogWriter.println("Finalizado em: " + LocalDateTime.now());
+            notesLogWriter.close();
+        }
+
+        logger.info("Carregamento das notas finalizado. {} livros pulados, {} notas carregadas, {} notas puladas.",
+                booksSkipped, totalNotesLoaded, totalNotesSkipped);
     }
 
-    /**
-     * Processa um único arquivo de texto de notas, parseia e salva no banco.
-     *
-     * @return O número de notas processadas no arquivo.
-     */
-    private int processStudyNoteFile(String filePath, String bookName, String sourceName) {
+
+    private int[] processStudyNoteFile(String filePath, String bookName, String sourceName) {
         logger.info("Processando notas para '{}' do arquivo {}...", bookName, filePath);
+
+        // Log no arquivo
+        if (notesLogWriter != null) {
+            notesLogWriter.println("\n--- LIVRO: " + bookName + " ---");
+            notesLogWriter.println("Arquivo: " + filePath);
+            notesLogWriter.flush();
+        }
 
         String rawText;
         try {
             rawText = extractTextFromTxt(filePath);
         } catch (IOException e) {
             logger.error("ERRO: Não foi possível ler o arquivo '{}'. Verifique se ele existe. Pulando.", filePath);
-            return 0;
+            if (notesLogWriter != null) {
+                notesLogWriter.println("ERRO: Arquivo não encontrado!");
+                notesLogWriter.flush();
+            }
+            return new int[]{0, 0};
         }
 
-        // Limpar o texto - remover o nome do livro se estiver no início
         String cleanedText = rawText.trim();
         if (cleanedText.startsWith(bookName)) {
             cleanedText = cleanedText.substring(bookName.length()).trim();
         }
 
-        // Dividir por asterisco seguido de espaço e número OU ponto/dois-pontos
-        // Isso captura tanto "* 1" quanto "* 5.21" quanto "* 5:21"
         String[] noteBlocks = cleanedText.split("\\*\\s+(?=[\\d])");
         int processedCount = 0;
         int skippedCount = 0;
@@ -644,7 +688,6 @@ public class DatabaseSeeder implements CommandLineRunner {
             try {
                 StudyNote note = parseNoteBlock(block.trim(), bookName, sourceName);
                 if (note != null) {
-                    // Gerar embedding para a nota
                     try {
                         PGvector vector = geminiApiClient.generateEmbedding(note.getNoteContent());
                         note.setNoteVector(convertPGvectorToFloatArray(vector));
@@ -663,12 +706,22 @@ public class DatabaseSeeder implements CommandLineRunner {
                     }
                 } else {
                     skippedCount++;
+                    // Log da nota não processada
+                    logSkippedNote(bookName, block);
                 }
             } catch (Exception e) {
                 logger.error("Falha ao processar bloco de nota para '{}'. Erro: {}", bookName, e.getMessage());
                 logger.debug("Bloco problemático: {}", block.substring(0, Math.min(100, block.length())));
                 skippedCount++;
+                logSkippedNote(bookName, block);
             }
+        }
+
+        // Log resumo do livro
+        if (notesLogWriter != null) {
+            notesLogWriter.println("Total processadas: " + processedCount);
+            notesLogWriter.println("Total puladas: " + skippedCount);
+            notesLogWriter.flush();
         }
 
         if (skippedCount > 0) {
@@ -677,13 +730,22 @@ public class DatabaseSeeder implements CommandLineRunner {
             logger.info("✔ Sucesso! {} notas processadas para {}.", processedCount, bookName);
         }
 
-        return processedCount;
+        return new int[]{processedCount, skippedCount};
+    }
+
+    private void logSkippedNote(String bookName, String block) {
+        if (notesLogWriter != null) {
+            String preview = block.substring(0, Math.min(100, block.length()));
+            if (block.length() > 100) preview += "...";
+            notesLogWriter.println("  [PULADA] " + bookName + ": " + preview.replaceAll("\\s+", " "));
+            notesLogWriter.flush();
+        }
     }
 
     private StudyNote parseNoteBlock(String block, String bookName, String sourceName) {
         // Regex mais flexível para capturar diferentes formatos de referência
         // Aceita: "1.1", "1:1", "1.1-3", "1:1-3", "1", "1-3", etc.
-        Pattern pattern = Pattern.compile("^([\\d]+[.:,]?[\\d\\-,:]*?)\\s+(.*)", Pattern.DOTALL);
+        Pattern pattern = Pattern.compile("^([\\d]+[.:,]?[\\d]*[\\-—]?[\\d]*[.:,]?[\\d]*)\\s+(.*)", Pattern.DOTALL);
         Matcher matcher = pattern.matcher(block);
 
         if (!matcher.find()) {
@@ -731,7 +793,9 @@ public class DatabaseSeeder implements CommandLineRunner {
 
         try {
             // Remover espaços e caracteres não numéricos exceto . : , -
-            String cleanRef = reference.replaceAll("\\s+", "");
+            String cleanRef = reference.replaceAll("\\s+", "")
+                    .replace("—", "-")  // hífen longo
+                    .replace("–", "-"); // hífen médio
 
             // Detectar se a referência usa formato capítulo.versículo ou capítulo:versículo
             if (cleanRef.contains(".") || cleanRef.contains(":")) {
