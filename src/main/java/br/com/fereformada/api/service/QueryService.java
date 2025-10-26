@@ -397,6 +397,11 @@ public class QueryService {
             logger.debug("  SUPER-BOOST INSTITUTAS aplicado para '{}'", item.source());
         }
 
+        else if ((questionLower.contains("teologia sistemática") || questionLower.contains("berkhof")) && source.contains("teologia sistemática")) {
+            boost *= 2.0; // Boost massivo se o usuário perguntar especificamente
+            logger.debug("  SUPER-BOOST TEOLOGIA SISTEMÁTICA aplicado para '{}'", item.source());
+        }
+
         String content = item.content().toLowerCase();
 
         // ===== NOVO: PRIORIDADE MÁXIMA PARA ESCRITURA =====
@@ -422,6 +427,11 @@ public class QueryService {
         }
 
         // 2. Documentos confessionais (subordinados à Escritura)
+
+
+        else if (source.contains("institutas") || source.contains("teologia sistemática")) {
+            boost *= 1.15; // Damos o mesmo peso das Institutas
+        }
         else if (source.contains("confissão de fé")) {
             boost *= 1.3;
         } else if (source.contains("catecismo maior")) {
@@ -545,6 +555,30 @@ public class QueryService {
         return combinedItems;
     }
 
+    private List<ContextItem> convertRawNoteResultsToContextItems(List<Object[]> rawResults) {
+        List<ContextItem> items = new ArrayList<>();
+        for (Object[] row : rawResults) {
+            try {
+                StudyNote note = new StudyNote();
+                note.setId(((Number) row[0]).longValue());
+                note.setBook((String) row[1]);
+                note.setStartChapter(((Number) row[2]).intValue());
+                note.setStartVerse(((Number) row[3]).intValue());
+                note.setEndChapter(((Number) row[4]).intValue());
+                note.setEndVerse(((Number) row[5]).intValue());
+                note.setNoteContent((String) row[6]);
+
+                double score = ((Number) row[7]).doubleValue();
+
+                // Aqui chamamos o método 'from' específico para StudyNote, que também vamos criar.
+                items.add(ContextItem.from(note, score));
+            } catch (Exception e) {
+                logger.warn("Erro ao converter resultado raw de note: {}", e.getMessage(), e);
+            }
+        }
+        return items;
+    }
+
     // ===== CACHE DE EMBEDDINGS =====
     private PGvector getOrComputeEmbedding(String text) {
         // Limitar o texto para a chave do cache
@@ -643,12 +677,14 @@ public class QueryService {
     }
 
     // ===== MÉTODOS AUXILIARES EXISTENTES =====
+
+
     private List<ContextItem> convertRawChunkResultsToContextItems(List<Object[]> rawResults) {
         List<ContextItem> items = new ArrayList<>();
         for (Object[] row : rawResults) {
             try {
-                Long workId = ((Number) row[7]).longValue();
-                Work work = workRepository.findById(workId).orElse(null);
+                Work work = workRepository.findById(((Number) row[7]).longValue()).orElse(null);
+                if (work == null) continue;
 
                 ContentChunk chunk = new ContentChunk();
                 chunk.setId(((Number) row[0]).longValue());
@@ -660,35 +696,52 @@ public class QueryService {
                 chunk.setSectionNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
                 chunk.setWork(work);
 
-                double score = ((Number) row[8]).doubleValue();
-                items.add(ContextItem.from(chunk, score));
+                // 👇 CORREÇÃO DOS ÍNDICES AQUI 👇
+                // Agora que a query foi corrigida, os índices mudaram:
+                chunk.setSubsectionTitle((String) row[8]);      // subsection_title está no índice 8
+                chunk.setSubSubsectionTitle((String) row[9]);   // sub_subsection_title está no índice 9
+
+                // O score agora está no final, no índice 10
+                double score = ((Number) row[10]).doubleValue();
+
+                String contextualSource = buildContextualSource(chunk);
+
+                items.add(ContextItem.from(chunk, score, contextualSource));
+
             } catch (Exception e) {
-                logger.warn("Erro ao converter resultado raw de chunk: {}", e.getMessage());
+                logger.warn("Erro ao converter resultado raw de chunk: {}", e.getMessage(), e);
             }
         }
         return items;
     }
 
-    private List<ContextItem> convertRawNoteResultsToContextItems(List<Object[]> rawResults) {
-        List<ContextItem> items = new ArrayList<>();
-        for (Object[] row : rawResults) {
-            try {
-                StudyNote note = new StudyNote();
-                note.setId(((Number) row[0]).longValue());
-                note.setBook((String) row[1]);
-                note.setStartChapter(((Number) row[2]).intValue());
-                note.setStartVerse(((Number) row[3]).intValue());
-                note.setEndChapter(((Number) row[4]).intValue());
-                note.setEndVerse(((Number) row[5]).intValue());
-                note.setNoteContent((String) row[6]);
+    private String buildContextualSource(ContentChunk chunk) {
+        // Usa um StringBuilder para eficiência
+        StringBuilder path = new StringBuilder();
 
-                double score = ((Number) row[7]).doubleValue();
-                items.add(ContextItem.from(note, score));
-            } catch (Exception e) {
-                logger.warn("Erro ao converter resultado raw de note: {}", e.getMessage());
-            }
+        if (chunk.getChapterTitle() != null && !chunk.getChapterTitle().isEmpty()) {
+            path.append(chunk.getChapterTitle());
         }
-        return items;
+        if (chunk.getSectionTitle() != null && !chunk.getSectionTitle().isEmpty()) {
+            if (!path.isEmpty()) path.append(" > ");
+            path.append(chunk.getSectionTitle());
+        }
+        if (chunk.getSubsectionTitle() != null && !chunk.getSubsectionTitle().isEmpty()) {
+            if (!path.isEmpty()) path.append(" > ");
+            path.append(chunk.getSubsectionTitle());
+        }
+        if (chunk.getSubSubsectionTitle() != null && !chunk.getSubSubsectionTitle().isEmpty()) {
+            if (!path.isEmpty()) path.append(" > ");
+            path.append(chunk.getSubSubsectionTitle());
+        }
+
+        // Se por algum motivo nenhum título foi encontrado, retorna apenas o nome da obra
+        if (path.isEmpty()) {
+            return chunk.getWork().getTitle();
+        }
+
+        // Retorna o nome da obra + o caminho construído
+        return chunk.getWork().getTitle() + " - " + path.toString();
     }
 
     // ===== MÉTODO PARA LIMPAR CACHE (útil para admin) =====
@@ -859,7 +912,13 @@ public class QueryService {
         logger.info("  🧠 Vector: {} resultados", vectorResults.size());
         logger.info("  🔤 FTS: {} resultados", ftsResults.size());
         logger.info("  🎯 Final (Balanceado): {} resultados únicos", finalResults.size());
-        logRerankedResults(finalResults);
+        logger.info("--- [DEBUG] Verificando Fontes Finais ---");
+        for (ContextItem item : finalResults) {
+            logger.info("  -> Fonte: {}, Score: {:.3f}", item.source(), item.similarityScore());
+        }
+        logger.info("-----------------------------------------");
+// ========================================================================
+
         return finalResults;
     }
 
@@ -1176,7 +1235,7 @@ public class QueryService {
 
     private Optional<QueryResponse> handleDirectReferenceQuery(String userQuestion) {
         // Regex para detectar padrões como: CFW 21.1, CM 98, BC 1 (case-insensitive)
-        Pattern pattern = Pattern.compile("\\b(CFW|CM|BC)\\s*(\\d+)(?:[:.](\\d+))?\\b", Pattern.CASE_INSENSITIVE);
+        Pattern pattern = Pattern.compile("\\b(CFW|CM|BC|TSB)\\s*(\\d+)(?:[:.](\\d+))?\\b", Pattern.CASE_INSENSITIVE);
         Matcher matcher = pattern.matcher(userQuestion);
 
         if (matcher.find()) {

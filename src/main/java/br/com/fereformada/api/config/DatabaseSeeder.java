@@ -1,6 +1,7 @@
 
 package br.com.fereformada.api.config;
 
+import br.com.fereformada.api.dto.ChunkData;
 import br.com.fereformada.api.model.Author;
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
@@ -9,6 +10,8 @@ import br.com.fereformada.api.repository.*;
 import br.com.fereformada.api.service.ChunkingService;
 import br.com.fereformada.api.service.StudyNoteBatchService;
 import br.com.fereformada.api.service.TaggingService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pgvector.PGvector;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -128,6 +131,10 @@ public class DatabaseSeeder implements CommandLineRunner {
             status.institutesChunks = contentChunkRepository.countByWorkTitle("Institutas da Religião Cristã");
         }
 
+        if (status.hasSystematicTheology) {
+            status.systematicTheologyChunks = contentChunkRepository.countByWorkTitle("Teologia Sistemática");
+        }
+
         // --- CORREÇÃO APLICADA AQUI ---
 
         // 1. ADICIONE ESTA LINHA para buscar a contagem de livros distintos
@@ -154,19 +161,20 @@ public class DatabaseSeeder implements CommandLineRunner {
                 status.hasInstitutes ? "✅" : "❌", status.institutesChunks);
         logger.info("  • Notas da Bíblia de Genebra: {} (notas: {})",
                 status.hasGenevaNotes ? "✅" : "❌", status.genevaNotesCount);
+        logger.info("  • Teologia Sistemática: {} (chunks: {})",
+                status.hasSystematicTheology ? "✅" : "❌", status.systematicTheologyChunks);
     }
 
-    private void ensureTopicsAndAuthorsExist() {
+    @Transactional
+    protected void ensureTopicsAndAuthorsExist() {
         // Só cria se não existirem
         if (topicRepository.count() == 0) {
             logger.info("📝 Criando tópicos...");
             createAllTopics();
         }
 
-        if (authorRepository.count() == 0) {
-            logger.info("👥 Criando autores...");
-            createAllAuthors();
-        }
+        logger.info("👥 Verificando e garantindo existência dos autores...");
+        createAllAuthors();
     }
 
     private void createAllTopics() {
@@ -194,6 +202,7 @@ public class DatabaseSeeder implements CommandLineRunner {
     private void createAllAuthors() {
         Author westminster = createAuthor("Assembleia de Westminster", "Puritanos", "1643-01-01", "1653-01-01");
         Author calvin = createAuthor("João Calvino", "Reforma", "1509-07-10", "1564-05-27");
+        Author berkhof = createAuthor("Louis Berkhof", "Teologia Reformada (Século XX)", "1873-10-13", "1957-05-18");
 
         logger.info("✅ Autores criados: {} e {}", westminster.getName(), calvin.getName());
     }
@@ -202,6 +211,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         List<Topic> allTopics = topicRepository.findAll();
         Author westminsterAssembly = authorRepository.findByName("Assembleia de Westminster").orElseThrow();
         Author calvin = authorRepository.findByName("João Calvino").orElseThrow();
+        Author berkhof = authorRepository.findByName("Louis Berkhof").orElseThrow();
 
         // Carregar apenas o que está faltando
         if (!status.hasConfession) {
@@ -238,6 +248,13 @@ public class DatabaseSeeder implements CommandLineRunner {
         } else {
             logger.info("⏭️ Notas da Bíblia de Genebra já carregadas, pulando...");
         }
+
+        if (!status.hasSystematicTheology) {
+            logger.info("🔄 Carregando Teologia Sistemática...");
+            loadSystematicTheology(berkhof, allTopics);
+        } else {
+            logger.info("⏭️ Teologia Sistemática já carregada, pulando...");
+        }
     }
 
     // Classe auxiliar para status
@@ -246,17 +263,19 @@ public class DatabaseSeeder implements CommandLineRunner {
         boolean hasLargerCatechism = false;
         boolean hasShorterCatechism = false;
         boolean hasInstitutes = false;
+        boolean hasSystematicTheology = false; //
 
         long confessionChunks = 0;
         long largerCatechismChunks = 0;
         long shorterCatechismChunks = 0;
         long institutesChunks = 0;
+        long systematicTheologyChunks = 0;
 
         boolean hasGenevaNotes = false;
         long genevaNotesCount = 0;
 
         boolean isComplete() {
-            return hasConfession && hasLargerCatechism && hasShorterCatechism && hasInstitutes && hasGenevaNotes;
+            return hasConfession && hasLargerCatechism && hasShorterCatechism && hasInstitutes && hasGenevaNotes && hasSystematicTheology;
         }
     }
 
@@ -266,7 +285,7 @@ public class DatabaseSeeder implements CommandLineRunner {
             return;
         }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
-        Work confession = createWork(WORK_TITLE, author, 1646, "CONFISSAO");
+        Work confession = createWork(WORK_TITLE, author, 1646, "CONFISSAO", "CFW");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/confissao_westminster.pdf", 3, 21);
 
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseWestminsterConfession(rawText);
@@ -322,7 +341,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
-        Work catechism = createWork(WORK_TITLE, author, 1648, "CATECISMO");
+        Work catechism = createWork(WORK_TITLE, author, 1648, "CATECISMO", "CM");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/catecismo_maior_westminster.pdf");
 
         List<ChunkingService.ParsedQuestionChunk> parsedChunks = chunkingService.parseWestminsterLargerCatechism(rawText);
@@ -379,7 +398,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
-        Work catechism = createWork(WORK_TITLE, author, 1647, "CATECISMO");
+        Work catechism = createWork(WORK_TITLE, author, 1647, "CATECISMO", "BC");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/breve_catecismo_westminster.pdf");
 
         List<ChunkingService.ParsedQuestionChunk> parsedChunks = chunkingService.parseWestminsterShorterCatechism(rawText);
@@ -438,7 +457,7 @@ public class DatabaseSeeder implements CommandLineRunner {
 
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
-        Work institutes = createWork(WORK_TITLE, author, 1536, "LIVRO");
+        Work institutes = createWork(WORK_TITLE, author, 1536, "LIVRO", "ICR"); // "Institutas da Religião Cristã"
         String rawText = extractTextFromPdf("classpath:data-content/pdf/Institutas da Religiao Crista - Joao Calvino.pdf", 36, 367);
 
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseCalvinInstitutes(rawText);
@@ -521,12 +540,13 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
     }
 
-    private Work createWork(String title, Author author, int year, String type) {
+    private Work createWork(String title, Author author, int year, String type, String acronym) {
         Work work = new Work();
         work.setTitle(title);
         work.setAuthor(author);
         work.setPublicationYear(year);
         work.setType(type);
+        work.setAcronym(acronym); // <-- LINHA CRUCIAL ADICIONADA
         return workRepository.save(work);
     }
 
@@ -835,6 +855,67 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
 
         return note;
+    }
+
+    private void loadSystematicTheology(Author author, List<Topic> availableTopics) throws IOException {
+        final String WORK_TITLE = "Teologia Sistemática";
+        if (workRepository.findByTitle(WORK_TITLE).isPresent()) {
+            logger.info("'{}' já está no banco. Pulando.", WORK_TITLE);
+            return;
+        }
+        logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
+
+        // 1. Crie a entrada para a obra (Work)
+        Work berkhofWork = createWork(WORK_TITLE, author, 1932, "TEOLOGIA_SISTEMATICA", "TSB"); // "Teologia Sistemática de Berkhof"
+        berkhofWork.setAcronym("TSB"); // Adicionando o acrônimo
+        workRepository.save(berkhofWork);
+
+        // 2. Leia o arquivo JSON usando o ResourceLoader
+        ObjectMapper mapper = new ObjectMapper();
+        Resource resource = resourceLoader.getResource("classpath:data-content/berkhof_chunks.json");
+        List<ChunkData> chunksData;
+        try (InputStream is = resource.getInputStream()) {
+            chunksData = mapper.readValue(is, new TypeReference<List<ChunkData>>() {});
+        }
+
+        logger.info("{} chunks lidos do JSON. Iniciando processamento e salvamento...", chunksData.size());
+
+        int totalChunks = chunksData.size();
+        int processedChunks = 0;
+
+        // 3. Itere sobre os dados do JSON, crie as entidades e salve
+        for (ChunkData data : chunksData) {
+            processedChunks++;
+
+            ContentChunk chunk = new ContentChunk();
+            chunk.setWork(berkhofWork);
+            chunk.setChapterTitle(data.getChapterTitle());
+            chunk.setSectionTitle(data.getSectionTitle());
+            chunk.setSubsectionTitle(data.getSubsectionTitle());
+            chunk.setSubSubsectionTitle(data.getSubSubsectionTitle());
+            chunk.setContent(data.getContent());
+
+            // Gere o embedding
+            try {
+                PGvector vector = geminiApiClient.generateEmbedding(data.getContent());
+                chunk.setContentVector(convertPGvectorToFloatArray(vector));
+            } catch (Exception e) {
+                logger.error("Erro ao gerar embedding para chunk {}/{}: {}", processedChunks, totalChunks, e.getMessage());
+            }
+
+            // Aplique tags (tópicos)
+            String taggingInput = data.getChapterTitle() + " " + data.getSectionTitle() + " " + data.getContent();
+            chunk.setTopics(taggingService.getTagsFor(taggingInput, ""));
+
+            contentChunkRepository.save(chunk);
+
+            if (processedChunks % 50 == 0 || processedChunks == totalChunks) {
+                logger.info("Progresso Teologia Sistemática: {}/{} chunks processados ({}%)",
+                        processedChunks, totalChunks,
+                        Math.round((processedChunks * 100.0) / totalChunks));
+            }
+        }
+        logger.info("'{}' carregado e salvo no banco. Total: {} chunks", WORK_TITLE, processedChunks);
     }
 
     private int[] parseReferenceForStudyNotes(String reference, String bookName) {
