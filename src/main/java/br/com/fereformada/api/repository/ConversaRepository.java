@@ -4,8 +4,12 @@ import br.com.fereformada.api.model.Conversa; // Importe sua entidade Conversa
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.UUID;
 
 @Repository
 public interface ConversaRepository extends JpaRepository<Conversa, UUID> {
+
+    List<Conversa> findByUserIdOrderByCreatedAtDesc(UUID userId);
+
 }

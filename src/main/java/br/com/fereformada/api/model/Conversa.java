@@ -1,5 +1,6 @@
 package br.com.fereformada.api.model;
 
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -28,6 +29,7 @@ public class Conversa {
     @Column(name = "created_at", updatable = false)
     private OffsetDateTime createdAt;
 
+    @JsonManagedReference
     // Mapeia o relacionamento: Uma Conversa tem muitas Mensagens
     @OneToMany(mappedBy = "conversa", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<Mensagem> mensagens;
