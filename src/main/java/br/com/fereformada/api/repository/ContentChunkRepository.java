@@ -17,70 +17,73 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     long countByWorkTitle(@Param("workTitle") String workTitle);
 
     @Query(nativeQuery = true, value = """
-    SELECT
-        c.id, c.content, c.question, c.section_title, c.chapter_title,
-        c.chapter_number, c.section_number, c.work_id,
-        c.subsection_title, c.sub_subsection_title,  -- <-- CORREÇÃO AQUI
-        1 - (c.content_vector <=> CAST(:embedding AS vector)) AS similarity_score
-    FROM
-        content_chunks c
-    WHERE
-            c.content_vector IS NOT NULL
-    ORDER BY
-        similarity_score DESC
-    LIMIT :limit
-""")
-    List<Object[]> findSimilarChunksRaw(String embedding, int limit);
+            SELECT
+                    c.id, c.content, c.question, c.section_title, c.chapter_title,
+                    c.chapter_number, c.section_number, c.work_id,
+                    c.subsection_title, c.sub_subsection_title,
+                    1 - (c.content_vector <=> CAST(:embedding AS vector)) AS similarity_score
+                FROM
+                    content_chunks c
+                WHERE
+                    c.content_vector IS NOT NULL
+                ORDER BY
+                    similarity_score DESC
+                LIMIT :limit
+            """)
+    List<Object[]> findSimilarChunksRaw(
+            @Param("embedding") String embedding,  // <-- ADICIONE ISTO
+            @Param("limit") int limit             // <-- ADICIONE ISTO
+    );
 
     // ===== NOVO: FTS POSTGRESQL =====
     @Query(value = """
-        SELECT 
-            c.id, c.content, c.question, c.section_title, c.chapter_title,
-            c.chapter_number, c.section_number, c.work_id,
-            ts_rank(
-                to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, '')), 
-                to_tsquery('portuguese', :tsquery)
-            ) as fts_rank
-        FROM content_chunks c
-        WHERE to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, ''))
-              @@ to_tsquery('portuguese', :tsquery)
-        ORDER BY fts_rank DESC
-        LIMIT :limit
-        """, nativeQuery = true)
+            SELECT 
+                c.id, c.content, c.question, c.section_title, c.chapter_title,
+                c.chapter_number, c.section_number, c.work_id,
+                ts_rank(
+                    to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, '')), 
+                    to_tsquery('portuguese', :tsquery)
+                ) as fts_rank
+            FROM content_chunks c
+            WHERE to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, ''))
+                  @@ to_tsquery('portuguese', :tsquery)
+            ORDER BY fts_rank DESC
+            LIMIT :limit
+            """, nativeQuery = true)
     List<Object[]> searchByKeywordsFTS(@Param("tsquery") String tsquery, @Param("limit") int limit);
 
     // ===== JPQL FALLBACK (mantido) =====
     @Query("""
-        SELECT c FROM ContentChunk c 
-        WHERE LOWER(c.content) LIKE LOWER(CONCAT('%', :keyword, '%'))
-           OR LOWER(COALESCE(c.question, '')) LIKE LOWER(CONCAT('%', :keyword, '%'))
-           OR LOWER(COALESCE(c.chapterTitle, '')) LIKE LOWER(CONCAT('%', :keyword, '%'))
-        ORDER BY 
-            CASE 
-                WHEN LOWER(COALESCE(c.question, '')) LIKE LOWER(CONCAT('%', :keyword, '%')) THEN 1
-                WHEN LOWER(COALESCE(c.chapterTitle, '')) LIKE LOWER(CONCAT('%', :keyword, '%')) THEN 2
-                ELSE 3
-            END
-        """)
+            SELECT c FROM ContentChunk c 
+            WHERE LOWER(c.content) LIKE LOWER(CONCAT('%', :keyword, '%'))
+               OR LOWER(COALESCE(c.question, '')) LIKE LOWER(CONCAT('%', :keyword, '%'))
+               OR LOWER(COALESCE(c.chapterTitle, '')) LIKE LOWER(CONCAT('%', :keyword, '%'))
+            ORDER BY 
+                CASE 
+                    WHEN LOWER(COALESCE(c.question, '')) LIKE LOWER(CONCAT('%', :keyword, '%')) THEN 1
+                    WHEN LOWER(COALESCE(c.chapterTitle, '')) LIKE LOWER(CONCAT('%', :keyword, '%')) THEN 2
+                    ELSE 3
+                END
+            """)
     List<ContentChunk> searchByKeywords(@Param("keyword") String keyword, Pageable pageable);
 
     @Query("""
-        SELECT c FROM ContentChunk c 
-        WHERE LOWER(c.content) LIKE LOWER(CONCAT('%', :keyword, '%'))
-        ORDER BY c.id
-        """)
+            SELECT c FROM ContentChunk c 
+            WHERE LOWER(c.content) LIKE LOWER(CONCAT('%', :keyword, '%'))
+            ORDER BY c.id
+            """)
     List<ContentChunk> findByContentContainingIgnoreCase(
             @Param("keyword") String keyword,
             Pageable pageable
     );
 
     @Query("""
-        SELECT c FROM ContentChunk c 
-        JOIN c.topics t 
-        JOIN c.work w 
-        WHERE t IN :topics AND w.title = :workTitle
-        ORDER BY c.chapterNumber, c.sectionNumber
-        """)
+            SELECT c FROM ContentChunk c 
+            JOIN c.topics t 
+            JOIN c.work w 
+            WHERE t IN :topics AND w.title = :workTitle
+            ORDER BY c.chapterNumber, c.sectionNumber
+            """)
     List<ContentChunk> findTopByTopicsAndWorkTitle(
             @Param("topics") Set<Topic> topics,
             @Param("workTitle") String workTitle,

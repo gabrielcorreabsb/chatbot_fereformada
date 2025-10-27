@@ -3,6 +3,7 @@ package br.com.fereformada.api.config;
 import br.com.fereformada.api.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -24,6 +25,9 @@ public class SecurityConfig {
         http
                 // Desabilita CSRF (não necessário para APIs stateless)
                 .csrf(csrf -> csrf.disable())
+
+                // Habilita o CORS no nível do Spring Security
+                .cors(Customizer.withDefaults())
 
                 // Define a política de sessão como STATELESS (sem sessão no servidor)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

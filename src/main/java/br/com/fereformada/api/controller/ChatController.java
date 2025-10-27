@@ -3,9 +3,7 @@ package br.com.fereformada.api.controller;
 
 // Imports dos DTOs
 
-import br.com.fereformada.api.dto.ChatRequest;
-import br.com.fereformada.api.dto.ChatResponse;
-import br.com.fereformada.api.dto.QueryResponse; // Import do seu DTO existente
+import br.com.fereformada.api.dto.*;
 
 // Imports dos Serviços
 import br.com.fereformada.api.model.Mensagem;
@@ -32,16 +30,12 @@ public class ChatController {
     private final QueryService queryService;
     private final HistoricoService historicoService;
 
-    private final ConversaRepository conversaRepository;
-    private final MensagemRepository mensagemRepository;
 
     // Injetamos os dois serviços
-    public ChatController(QueryService queryService, HistoricoService historicoService, ConversaRepository conversaRepository, // NOVO
-                          MensagemRepository mensagemRepository) {
+    public ChatController(QueryService queryService, HistoricoService historicoService) {
         this.queryService = queryService;
         this.historicoService = historicoService;
-        this.conversaRepository = conversaRepository;
-        this.mensagemRepository = mensagemRepository;
+
     }
 
     @PostMapping
@@ -81,35 +75,23 @@ public class ChatController {
     }
 
     @GetMapping
-    public ResponseEntity<List<Conversa>> getHistoricoConversas(Authentication authentication) {
-        // 1. Pega o ID do usuário autenticado
+    public ResponseEntity<List<ConversaDTO>> getHistoricoConversas(Authentication authentication) {
         UUID userId = UUID.fromString((String) authentication.getPrincipal());
-
-        // 2. Busca no repositório
-        List<Conversa> conversas = conversaRepository.findByUserIdOrderByCreatedAtDesc(userId);
-
-        // 3. Retorna a lista (mais tarde, podemos usar DTOs aqui)
+        List<ConversaDTO> conversas = historicoService.getConversasPorUsuario(userId);
         return ResponseEntity.ok(conversas);
     }
 
+    // --- MÉTODO GET 2 (Atualizado) ---
     @GetMapping("/{chatId}")
-    public ResponseEntity<List<Mensagem>> getMensagensDaConversa(
+    public ResponseEntity<List<MensagemDTO>> getMensagensDaConversa(
             @PathVariable UUID chatId,
             Authentication authentication) {
 
         UUID userId = UUID.fromString((String) authentication.getPrincipal());
 
-        // 1. Verificação de Segurança: O usuário é dono desta conversa?
-        Conversa conversa = conversaRepository.findById(chatId)
-                .orElseThrow(() -> new RuntimeException("Conversa não encontrada")); // Lançar exceção customizada depois
-
-        if (!conversa.getUserId().equals(userId)) {
-            // Se o ID do dono da conversa não for o mesmo do usuário logado, negue.
-            return ResponseEntity.status(403).build(); // 403 Forbidden
-        }
-
-        // 2. Se for o dono, busque as mensagens
-        List<Mensagem> mensagens = mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId);
+        // Toda a lógica de validação e busca está no serviço agora
+        // (Vamos adicionar um try/catch depois)
+        List<MensagemDTO> mensagens = historicoService.getMensagensPorConversa(chatId, userId);
         return ResponseEntity.ok(mensagens);
     }
 }

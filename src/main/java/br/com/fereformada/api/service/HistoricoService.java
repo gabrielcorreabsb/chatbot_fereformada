@@ -1,5 +1,7 @@
 package br.com.fereformada.api.service;
 
+import br.com.fereformada.api.dto.ConversaDTO;
+import br.com.fereformada.api.dto.MensagemDTO;
 import br.com.fereformada.api.model.Conversa;
 import br.com.fereformada.api.model.Mensagem;
 import br.com.fereformada.api.repository.ConversaRepository;
@@ -7,7 +9,9 @@ import br.com.fereformada.api.repository.MensagemRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class HistoricoService {
@@ -60,5 +64,30 @@ public class HistoricoService {
         novaConversa.setTitle(title);
 
         return conversaRepository.save(novaConversa);
+    }
+
+    // --- NOVO MÉTODO 1: Listar conversas como DTOs ---
+    public List<ConversaDTO> getConversasPorUsuario(UUID userId) {
+        return conversaRepository.findByUserIdOrderByCreatedAtDesc(userId)
+                .stream()
+                .map(conversa -> new ConversaDTO(conversa.getId(), conversa.getTitle()))
+                .collect(Collectors.toList());
+    }
+
+    // --- NOVO MÉTODO 2: Listar mensagens como DTOs ---
+    public List<MensagemDTO> getMensagensPorConversa(UUID chatId, UUID userId) {
+        // 1. Validar se o usuário é o dono da conversa
+        Conversa conversa = conversaRepository.findById(chatId)
+                .orElseThrow(() -> new RuntimeException("Conversa não encontrada: " + chatId)); // Melhorar esta exceção depois
+
+        if (!conversa.getUserId().equals(userId)) {
+            throw new RuntimeException("Acesso negado"); // Melhorar esta exceção depois
+        }
+
+        // 2. Se for o dono, buscar e mapear as mensagens
+        return mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId)
+                .stream()
+                .map(msg -> new MensagemDTO(msg.getId(), msg.getRole(), msg.getContent()))
+                .collect(Collectors.toList());
     }
 }

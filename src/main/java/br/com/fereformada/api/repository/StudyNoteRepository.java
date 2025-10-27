@@ -38,7 +38,10 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
             similarity_score DESC
         LIMIT :limit
     """)
-    List<Object[]> findSimilarNotesRaw(String embedding, int limit);
+    List<Object[]> findSimilarNotesRaw(
+            @Param("embedding") String embedding,  // <-- ADICIONE ISTO
+            @Param("limit") int limit             // <-- ADICIONE ISTO
+    );
 
     // ===== NOVO: FTS POSTGRESQL =====
     @Query(value = """
