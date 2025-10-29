@@ -16,6 +16,7 @@ import br.com.fereformada.api.service.HistoricoService; // O novo serviço de DB
 import br.com.fereformada.api.model.Conversa;
 
 // Imports do Spring e Segurança
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -40,7 +41,7 @@ public class ChatController {
 
     @PostMapping
     public ChatResponse handleChat(
-            @RequestBody ChatRequest request,
+            @Valid @RequestBody ChatRequest request,
             Authentication authentication // Spring Security injeta o usuário autenticado
     ) {
 

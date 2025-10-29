@@ -381,88 +381,94 @@ public class QueryService {
     }
 
     private ContextItem applySmartBoosts(ContextItem item, String question) {
-        double boost = 1.0;
+        // 👇 LOG DO SCORE ORIGINAL 👇
+        logger.debug("  Boosting item: '{}' (Score Original: {})",
+                item.source(),
+                String.format("%.3f", item.similarityScore()));
+
+        double finalScore = item.similarityScore(); // Começa com o score original
+        double additiveBoost = 0.0; // Usaremos adição para boosts secundários
+
         String source = item.source().toLowerCase();
         String questionLower = question.toLowerCase();
-
-        // ===== NOVO: SUPER-BOOST PARA DOCUMENTO CITADO DIRETAMENTE =====
-        if (questionLower.contains("catecismo") && source.contains("catecismo")) {
-            boost *= 2.0; // Boost massivo de 100%
-            logger.debug("  SUPER-BOOST CATECISMO aplicado para '{}'", item.source());
-        } else if (questionLower.contains("confissão") && source.contains("confissão de fé")) {
-            boost *= 2.0;
-            logger.debug("  SUPER-BOOST CONFISSÃO aplicado para '{}'", item.source());
-        } else if (questionLower.contains("institutas") && source.contains("institutas")) {
-            boost *= 2.0;
-            logger.debug("  SUPER-BOOST INSTITUTAS aplicado para '{}'", item.source());
-        }
-
-        else if ((questionLower.contains("teologia sistemática") || questionLower.contains("berkhof")) && source.contains("teologia sistemática")) {
-            boost *= 2.0; // Boost massivo se o usuário perguntar especificamente
-            logger.debug("  SUPER-BOOST TEOLOGIA SISTEMÁTICA aplicado para '{}'", item.source());
-        }
-
         String content = item.content().toLowerCase();
 
-        // ===== NOVO: PRIORIDADE MÁXIMA PARA ESCRITURA =====
-        // 1. BOOST SUPREMO para notas bíblicas (Sola Scriptura!)
-        if (source.contains("bíblia de genebra")) {
-            boost *= 1.4;  // MAIOR que qualquer documento confessional
+        // --- Boosts Principais (Multiplicativos, mas com cuidado) ---
 
-            // Boost extra se contém referência bíblica direta
+        // SUPER-BOOST para documento citado diretamente (MANTÉM MULTIPLICATIVO ALTO)
+        if ( (questionLower.contains("catecismo") && source.contains("catecismo")) ||
+                (questionLower.contains("confissão") && source.contains("confissão de fé")) ||
+                (questionLower.contains("institutas") && source.contains("institutas")) ||
+                ((questionLower.contains("teologia sistemática") || questionLower.contains("berkhof")) && source.contains("teologia sistemática")) )
+        {
+            finalScore *= 1.5; // Reduzido de 2.0 para 1.5 (Boost de 50%)
+            logger.debug("    -> SUPER BOOST aplicado");
+        }
+        // BOOST PRIORITÁRIO para ESCRITURA (MANTÉM MULTIPLICATIVO)
+        else if (source.contains("bíblia de genebra")) {
+            finalScore *= 1.2; // Reduzido de 1.4 para 1.2 (Boost de 20%)
+            logger.debug("    -> BOOST Bíblia aplicado");
+
+            // Boost ADITIVO se contém referência
             if (content.matches(".*\\d+[:\\.]\\d+.*")) {
-                boost *= 1.2;  // Total: 1.68x
+                additiveBoost += 0.1; // Adiciona 0.1
+                logger.debug("    -> ADD Boost Ref. Direta");
             }
-
-            // Boost extra para temas doutrinários que precisam de base bíblica
+            // Boost ADITIVO se pergunta doutrinária
             if (isDoctrinalQuestion(questionLower)) {
-                boost *= 1.15; // Ainda mais boost para doutrina
+                additiveBoost += 0.05; // Adiciona 0.05
+                logger.debug("    -> ADD Boost Doutrina");
             }
         }
-
-        boolean isDefinitionQuestion = questionLower.matches(".*(o que é|qual o|defina|explique o catecismo|pergunta \\d+).*");
-        if (isDefinitionQuestion && (source.contains("catecismo maior") || source.contains("breve catecismo"))) {
-            boost *= 1.1; // Adiciona um boost de 10% para catecismos neste cenário
-            logger.debug("  BOOST CATECISMO (10%) aplicado para '{}'", item.source());
-        }
-
-        // 2. Documentos confessionais (subordinados à Escritura)
-
-
-        else if (source.contains("institutas") || source.contains("teologia sistemática")) {
-            boost *= 1.15; // Damos o mesmo peso das Institutas
-        }
+        // Boosts MULTIPLICATIVOS MENORES para documentos confessionais importantes
         else if (source.contains("confissão de fé")) {
-            boost *= 1.3;
+            finalScore *= 1.1; // Boost de 10%
+            logger.debug("    -> BOOST Confissão aplicado");
         } else if (source.contains("catecismo maior")) {
-            boost *= 1.25;
+            finalScore *= 1.08; // Boost de 8%
+            logger.debug("    -> BOOST C. Maior aplicado");
         } else if (source.contains("breve catecismo")) {
-            boost *= 1.2;
-        } else if (source.contains("institutas")) {
-            boost *= 1.15;
+            finalScore *= 1.06; // Boost de 6%
+            logger.debug("    -> BOOST C. Breve aplicado");
+        } else if (source.contains("institutas") || source.contains("teologia sistemática")) {
+            finalScore *= 1.05; // Boost de 5% (já coberto pelo SUPER BOOST se citado)
+            logger.debug("    -> BOOST Institutas/TS aplicado");
         }
 
-        // 3. Boost se tem estrutura pergunta/resposta
-        if (item.question() != null && !item.question().isEmpty()) {
-            boost *= 1.1;
+        // --- Boosts Secundários (ADITIVOS) ---
 
+        // Boost ADITIVO se tem estrutura pergunta/resposta
+        if (item.question() != null && !item.question().isEmpty()) {
+            additiveBoost += 0.03; // Adiciona 0.03
+            logger.debug("    -> ADD Boost P/R");
+            // Boost ADITIVO extra se a pergunta bate
             if (calculateSimilarity(item.question().toLowerCase(), questionLower) > 0.7) {
-                boost *= 1.2;
+                additiveBoost += 0.07; // Adiciona +0.07 (Total 0.1)
+                logger.debug("    -> ADD Boost P/R Match");
             }
         }
 
-        // 4. NOVO: Boost para conteúdo que cita muitas referências bíblicas
+        // Boost ADITIVO para conteúdo que cita referências bíblicas
         int biblicalReferences = countBiblicalReferences(item.content());
-        if (biblicalReferences > 2) {
-            boost *= 1.1 + (biblicalReferences * 0.05); // Mais referências = mais boost
+        if (biblicalReferences > 1) { // A partir de 2 refs
+            additiveBoost += Math.min(biblicalReferences * 0.02, 0.1); // Adiciona 0.02 por ref, max 0.1
+            logger.debug("    -> ADD Boost Refs Bíblicas ({})", biblicalReferences);
         }
 
-        // 5. Penalidade para conteúdo muito curto
+        // --- Penalidade (Multiplicativa) ---
         if (item.content().length() < 100) {
-            boost *= 0.8;
+            finalScore *= 0.9; // Penalidade de 10%
+            logger.debug("    -> PENALTY Conteúdo Curto");
         }
 
-        return item.withAdjustedScore(item.similarityScore() * boost);
+        // --- Aplica Boost Aditivo e Garante Limites ---
+        finalScore += additiveBoost;
+        finalScore = Math.min(finalScore, 1.5); // COLOCA UM TETO MÁXIMO (ex: 1.5)
+        finalScore = Math.max(finalScore, 0.0); // Garante que não seja negativo
+
+        logger.debug("    -> Score Final: {}", String.format("%.3f", finalScore));
+
+        return item.withAdjustedScore(finalScore);
     }
 
     // ===== NOVOS MÉTODOS AUXILIARES =====
@@ -512,8 +518,8 @@ public class QueryService {
         for (int i = 0; i < Math.min(3, results.size()); i++) {
             ContextItem item = results.get(i);
             String type = item.isBiblicalNote() ? "📖" : "⛪";
-            logger.info("  {}. {} [Score: {:.3f}] {}",
-                    i + 1, type, item.similarityScore(), item.source());
+            logger.info("  {}. {} [Score: {}] {}",
+                    i + 1, type, String.format("%.3f", item.similarityScore()), item.source());
         }
 
         // Log da qualidade geral
@@ -523,7 +529,7 @@ public class QueryService {
                 .orElse(0.0);
 
         String qualityEmoji = avgScore > 0.8 ? "🔥" : avgScore > 0.6 ? "✅" : "⚠️";
-        logger.info("  {} Qualidade média: {:.1f}%", qualityEmoji, avgScore * 100);
+        logger.info("  {} Qualidade média: {}%", qualityEmoji, String.format("%.1f", avgScore * 100));
     }
 
     // ===== BUSCA VETORIAL OTIMIZADA =====
@@ -650,23 +656,23 @@ public class QueryService {
         }
 
         return String.format("""
-            Você é um assistente teológico especialista em Teologia Reformada. Sua tarefa é responder perguntas com base na Bíblia como autoridade final e nos Padrões de Westminster (Confissão, Catecismos) e outros documentos reformados como fiéis exposições da doutrina bíblica.
-
-            PRINCÍPIOS DE RESPOSTA:
-            1.  **Fundamento na Escritura (Sola Scriptura):** A Bíblia é a autoridade suprema e a fonte primária da sua resposta. Sempre comece estabelecendo a base bíblica para o tema, usando as fontes [B1, B2, etc.].
-            2.  **Elucidação Confessional:** Utilize os documentos confessionais [C1, C2, etc.] para aprofundar, sistematizar e explicar a doutrina bíblica. Mostre como eles organizam o ensino das Escrituras de forma clara.
-            3.  **Relação Harmoniosa:** A sua resposta deve demonstrar a harmonia entre a Escritura e as confissões. Trate os documentos confessionais como um resumo fiel e autorizado do que a Bíblia ensina.
-            4.  **Clareza e Precisão:** Use uma linguagem teológica precisa, mas clara. Aja como um professor explicando a doutrina reformada.
-
-            FONTES DISPONÍVEIS:
-            %s
-
-            PERGUNTA DO USUÁRIO:
-            %s
-
-            RESPOSTA ESTRUTURADA:
-            (Inicie com o fundamento bíblico, depois use as fontes confessionais para detalhar e sistematizar a explicação, e conclua de forma coesa.)
-            """, context.toString(), question);
+                Você é um assistente teológico especialista em Teologia Reformada. Sua tarefa é responder perguntas com base na Bíblia como autoridade final e nos Padrões de Westminster (Confissão, Catecismos) e outros documentos reformados como fiéis exposições da doutrina bíblica.
+                
+                PRINCÍPIOS DE RESPOSTA:
+                1.  **Fundamento na Escritura (Sola Scriptura):** A Bíblia é a autoridade suprema e a fonte primária da sua resposta. Sempre comece estabelecendo a base bíblica para o tema, usando as fontes [B1, B2, etc.].
+                2.  **Elucidação Confessional:** Utilize os documentos confessionais [C1, C2, etc.] para aprofundar, sistematizar e explicar a doutrina bíblica. Mostre como eles organizam o ensino das Escrituras de forma clara.
+                3.  **Relação Harmoniosa:** A sua resposta deve demonstrar a harmonia entre a Escritura e as confissões. Trate os documentos confessionais como um resumo fiel e autorizado do que a Bíblia ensina.
+                4.  **Clareza e Precisão:** Use uma linguagem teológica precisa, mas clara. Aja como um professor explicando a doutrina reformada.
+                
+                FONTES DISPONÍVEIS:
+                %s
+                
+                PERGUNTA DO USUÁRIO:
+                %s
+                
+                RESPOSTA ESTRUTURADA:
+                (Inicie com o fundamento bíblico, depois use as fontes confessionais para detalhar e sistematizar a explicação, e conclua de forma coesa.)
+                """, context.toString(), question);
     }
 
     private String limitContent(String content, int maxLength) {
@@ -914,7 +920,10 @@ public class QueryService {
         logger.info("  🎯 Final (Balanceado): {} resultados únicos", finalResults.size());
         logger.info("--- [DEBUG] Verificando Fontes Finais ---");
         for (ContextItem item : finalResults) {
-            logger.info("  -> Fonte: {}, Score: {:.3f}", item.source(), item.similarityScore());
+            logger.info("  -> Fonte: {}, Score: {}",
+                    item.source(),
+                    String.format("%.3f", item.similarityScore())
+            );
         }
         logger.info("-----------------------------------------");
 // ========================================================================
@@ -979,8 +988,12 @@ public class QueryService {
 
                 items.add(ContextItem.from(chunk, finalScore));
 
-                logger.debug("  📄 Chunk {}: FTS={:.3f}, Keyword={:.3f}, Final={:.3f}",
-                        chunk.getId(), ftsRank, keywordScore, finalScore);
+                logger.debug("  📄 Chunk {}: FTS={}, Keyword={}, Final={}",
+                        chunk.getId(),
+                        String.format("%.3f", ftsRank),
+                        String.format("%.3f", keywordScore),
+                        String.format("%.3f", finalScore)
+                );
 
             } catch (Exception e) {
                 logger.warn("❌ Erro ao converter resultado FTS chunk: {}", e.getMessage());
@@ -1011,8 +1024,12 @@ public class QueryService {
 
                 items.add(ContextItem.from(note, finalScore));
 
-                logger.debug("  📖 Nota {}: FTS={:.3f}, Keyword={:.3f}, Final={:.3f}",
-                        note.getId(), ftsRank, keywordScore, finalScore);
+                logger.debug("  📖 Nota {}: FTS={}, Keyword={}, Final={}",
+                        note.getId(),
+                        String.format("%.3f", ftsRank),
+                        String.format("%.3f", keywordScore),
+                        String.format("%.3f", finalScore)
+                );
 
             } catch (Exception e) {
                 logger.warn("❌ Erro ao converter resultado FTS note: {}", e.getMessage());
@@ -1099,8 +1116,8 @@ public class QueryService {
         for (int i = 0; i < Math.min(3, finalResults.size()); i++) {
             ContextItem item = finalResults.get(i);
             String type = item.isBiblicalNote() ? "📖" : "⛪";
-            logger.info("  {}. {} [Score: {:.3f}] {}",
-                    i + 1, type, item.similarityScore(), item.source());
+            logger.info("  {}. {} [Score: {}] {}",
+                    i + 1, type, String.format("%.3f", item.similarityScore()), item.source());
         }
 
         // Qualidade geral
@@ -1110,7 +1127,7 @@ public class QueryService {
                 .orElse(0.0);
 
         String qualityEmoji = avgScore > 0.8 ? "🔥" : avgScore > 0.6 ? "✅" : "⚠️";
-        logger.info("  {} Qualidade média: {:.1f}%", qualityEmoji, avgScore * 100);
+        logger.info("  {} Qualidade média: {}%", qualityEmoji, String.format("%.1f", avgScore * 100));
     }
 
     private List<ContextItem> performKeywordSearchFTS(String question) {
@@ -1259,22 +1276,22 @@ public class QueryService {
 
             // Criamos um prompt específico para explicar APENAS este trecho
             String focusedPrompt = String.format("""
-            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
-            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
-
-            DOCUMENTO: %s
-            REFERÊNCIA: %s %d%s
-            TEXTO ENCONTRADO:
-            "%s"
-
-            INSTRUÇÕES:
-            1.  Comece confirmando a referência (Ex: "A Confissão de Fé de Westminster, no capítulo %d, parágrafo %d, afirma que...").
-            2.  Explique o significado teológico do texto em suas próprias palavras.
-            3.  Se aplicável, mencione brevemente a importância prática ou doutrinária deste ponto.
-            4.  Seja direto e focado exclusivamente no texto fornecido.
-            
-            EXPLICAÇÃO:
-            """,
+                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
+                            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
+                            
+                            DOCUMENTO: %s
+                            REFERÊNCIA: %s %d%s
+                            TEXTO ENCONTRADO:
+                            "%s"
+                            
+                            INSTRUÇÕES:
+                            1.  Comece confirmando a referência (Ex: "A Confissão de Fé de Westminster, no capítulo %d, parágrafo %d, afirma que...").
+                            2.  Explique o significado teológico do texto em suas próprias palavras.
+                            3.  Se aplicável, mencione brevemente a importância prática ou doutrinária deste ponto.
+                            4.  Seja direto e focado exclusivamente no texto fornecido.
+                            
+                            EXPLICAÇÃO:
+                            """,
                     directHit.getWork().getTitle(),
                     acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""),
                     directHit.getContent(),

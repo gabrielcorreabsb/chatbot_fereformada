@@ -145,6 +145,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!--        VALIDATION-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
     </dependencies>
 
     <repositories>

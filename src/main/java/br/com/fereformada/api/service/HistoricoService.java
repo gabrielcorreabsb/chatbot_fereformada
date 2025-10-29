@@ -2,6 +2,8 @@ package br.com.fereformada.api.service;
 
 import br.com.fereformada.api.dto.ConversaDTO;
 import br.com.fereformada.api.dto.MensagemDTO;
+import br.com.fereformada.api.exception.ForbiddenException;
+import br.com.fereformada.api.exception.ResourceNotFoundException;
 import br.com.fereformada.api.model.Conversa;
 import br.com.fereformada.api.model.Mensagem;
 import br.com.fereformada.api.repository.ConversaRepository;
@@ -27,12 +29,14 @@ public class HistoricoService {
     @Transactional
     public Conversa salvarMensagemUsuario(UUID userId, String texto, UUID chatId) {
         // 1. Encontra a conversa ou cria uma nova
-        Conversa conversa = (chatId != null)
-                ? conversaRepository.findById(chatId)
-                .orElseGet(() -> criarNovaConversa(userId, texto)) // Se o ID for inválido, cria uma nova
-                : criarNovaConversa(userId, texto);
+        Conversa conversa;
+        if (chatId != null) {
+            // 👇 VERIFICA PROPRIEDADE SE chatId EXISTIR 👇
+            conversa = findAndVerifyOwnership(chatId, userId);
+        } else {
+            conversa = criarNovaConversa(userId, texto);
+        }
 
-        // 2. Cria e salva a mensagem do usuário
         Mensagem msgUsuario = new Mensagem();
         msgUsuario.setConversa(conversa);
         msgUsuario.setRole("user");
@@ -76,18 +80,24 @@ public class HistoricoService {
 
     // --- NOVO MÉTODO 2: Listar mensagens como DTOs ---
     public List<MensagemDTO> getMensagensPorConversa(UUID chatId, UUID userId) {
-        // 1. Validar se o usuário é o dono da conversa
-        Conversa conversa = conversaRepository.findById(chatId)
-                .orElseThrow(() -> new RuntimeException("Conversa não encontrada: " + chatId)); // Melhorar esta exceção depois
+        // Este método já faz o findById E a verificação de userId,
+        // lançando ResourceNotFoundException ou ForbiddenException se necessário.
+        Conversa conversa = findAndVerifyOwnership(chatId, userId);
 
-        if (!conversa.getUserId().equals(userId)) {
-            throw new RuntimeException("Acesso negado"); // Melhorar esta exceção depois
-        }
-
-        // 2. Se for o dono, buscar e mapear as mensagens
+        // Se chegou aqui, o usuário é o dono. Busca as mensagens.
         return mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId)
                 .stream()
                 .map(msg -> new MensagemDTO(msg.getId(), msg.getRole(), msg.getContent()))
                 .collect(Collectors.toList());
+    }
+
+    private Conversa findAndVerifyOwnership(UUID chatId, UUID userId) {
+        Conversa conversa = conversaRepository.findById(chatId)
+                .orElseThrow(() -> new ResourceNotFoundException("Conversa não encontrada: " + chatId));
+
+        if (!conversa.getUserId().equals(userId)) {
+            throw new ForbiddenException("Acesso negado à conversa: " + chatId);
+        }
+        return conversa;
     }
 }
