@@ -1,15 +1,21 @@
 package br.com.fereformada.api.service;
 
+import br.com.fereformada.api.model.Mensagem;
 import com.pgvector.PGvector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel; // Injeção correta
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.SystemPromptTemplate;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.embedding.EmbeddingResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -18,7 +24,7 @@ public class GeminiApiClient {
 
     private static final Logger logger = LoggerFactory.getLogger(GeminiApiClient.class);
 
-    private final ChatModel chatModel;
+    private final ChatModel chatModel; // Você está injetando o Model
     private final EmbeddingModel embeddingModel;
 
     @Autowired
@@ -27,13 +33,46 @@ public class GeminiApiClient {
         this.embeddingModel = embeddingModel;
     }
 
-    public String generateContent(String prompt) {
-        logger.info("Enviando prompt para o modelo generativo: '{}...'", prompt.substring(0, Math.min(prompt.length(), 100)));
+    public String generateContent(String systemPrompt, List<Mensagem> chatHistory, String userQuestion) {
+
+        logger.info("Enviando prompt de sistema e histórico de {} mensagens para o modelo.", chatHistory.size());
+
+        List<Message> messages = new ArrayList<>();
+
+        // 1. Adicionar o "System Prompt" (nosso prompt de RAG e regras)
+        messages.add(new SystemPromptTemplate(systemPrompt).createMessage());
+
+        // 2. Converter nosso histórico do banco (Mensagem) para o formato do Spring AI
+        for (Mensagem historyMsg : chatHistory) {
+            if (historyMsg.getRole().equals("user")) {
+                messages.add(new UserMessage(historyMsg.getContent()));
+            } else if (historyMsg.getRole().equals("assistant")) {
+                messages.add(new AssistantMessage(historyMsg.getContent()));
+            }
+        }
+
+        // 3. (A CORREÇÃO CRÍTICA)
+        // Adiciona a pergunta atual do usuário, mas APENAS se ela ainda não estiver no histórico.
+        // Isso corrige o erro "contents can't be null or empty" (na primeira pergunta)
+        // E também evita duplicatas em perguntas de acompanhamento.
+        boolean userQuestionInHistory = chatHistory.stream()
+                .anyMatch(m -> m.getRole().equals("user") && m.getContent().equals(userQuestion));
+
+        if (!userQuestionInHistory) {
+            messages.add(new UserMessage(userQuestion));
+        }
+
+        // 4. Criar o Prompt final com a conversa completa
+        Prompt prompt = new Prompt(messages);
+
         try {
-            return chatModel.call(new Prompt(prompt)).getResult().getOutput().getContent();
+            // 5. Chamar a API com a conversa completa
+            ChatResponse response = chatModel.call(prompt);
+            return response.getResult().getOutput().getContent();
+
         } catch (Exception e) {
             logger.error("Erro ao chamar a API para gerar conteúdo.", e);
-            return "Ocorreu um erro ao tentar gerar a resposta.";
+            throw new RuntimeException("Falha ao gerar conteúdo: " + e.getMessage(), e);
         }
     }
 
@@ -44,10 +83,10 @@ public class GeminiApiClient {
 
         logger.debug("Gerando embedding para o texto: '{}...'", text.substring(0, Math.min(text.length(), 100)));
         try {
-            // O método embed retorna diretamente float[]
+
+            // O método embed(String) é o correto.
             float[] embeddingArray = embeddingModel.embed(text);
 
-            // O PGvector aceita diretamente float[]
             return new PGvector(embeddingArray);
 
         } catch (Exception e) {
@@ -62,10 +101,10 @@ public class GeminiApiClient {
         }
         logger.info("Gerando embeddings em lote para {} textos...", texts.size());
         try {
-            // 1. O Spring AI chama a API e retorna uma lista de vetores (List<float[]>)
+
             List<float[]> batchEmbeddings = embeddingModel.embed(texts);
 
-            // 2. Convertemos cada float[] em um objeto PGvector
+            // Convertemos cada float[] em um objeto PGvector
             return batchEmbeddings.stream()
                     .map(PGvector::new) // Referência de método para new PGvector(floatArray)
                     .collect(Collectors.toList());

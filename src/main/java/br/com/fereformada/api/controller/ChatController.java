@@ -42,37 +42,30 @@ public class ChatController {
     @PostMapping
     public ChatResponse handleChat(
             @Valid @RequestBody ChatRequest request,
-            Authentication authentication // Spring Security injeta o usuário autenticado
+            Authentication authentication
     ) {
+        UUID userId = UUID.fromString((String) authentication.getPrincipal());
 
-
-        // 1. Pegar o ID do usuário como String
-        String userIdString = (String) authentication.getPrincipal();
-
-        // 2. Converter a String para UUID
-        UUID userId = UUID.fromString(userIdString);
-        // --- FIM DA CORREÇÃO ---
-
-        // 3. Salvar a pergunta do usuário no banco local
+        // 1. Salva a pergunta do usuário e obtém a conversa (nova ou existente)
+        //    (Assumindo que salvarMensagemUsuario retorna a Conversa)
         Conversa conversa = historicoService.salvarMensagemUsuario(
                 userId,
                 request.question(),
                 request.chatId()
         );
 
-        // 4. Chamar seu QueryService (que espera uma String)
-        QueryResponse queryResponse = queryService.query(request.question());
+        // 2. CRIA UM NOVO ChatRequest ATUALIZADO com o ID da conversa
+        //    Isso garante que o QueryService sempre saiba em qual chat está.
+        ChatRequest updatedRequest = new ChatRequest(request.question(), conversa.getId());
 
-        // 5. Extrair a resposta de texto
-        // !! CONFIRME AQUI !!
-        // Estou assumindo que seu DTO 'QueryResponse' tem um método 'answer()'
-        String respostaIA = queryResponse.answer();
+        // 3. Chama o QueryService com o request ATUALIZADO
+        QueryResponse queryResponse = queryService.query(updatedRequest);
 
-        // 6. Salvar a resposta da IA no banco local
-        historicoService.salvarMensagemIA(conversa, respostaIA);
+        // 4. Salva a resposta da IA na mesma conversa
+        historicoService.salvarMensagemIA(conversa, queryResponse.answer());
 
-        // 7. Retornar a resposta e o ID da conversa para o front-end
-        return new ChatResponse(respostaIA, conversa.getId());
+        // 5. Retorna a resposta e o ID da conversa
+        return new ChatResponse(queryResponse.answer(), conversa.getId());
     }
 
     @GetMapping

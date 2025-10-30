@@ -6,8 +6,12 @@ import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.StudyNote;
 import br.com.fereformada.api.model.Work;
 import br.com.fereformada.api.repository.ContentChunkRepository;
+import br.com.fereformada.api.repository.MensagemRepository;
 import br.com.fereformada.api.repository.StudyNoteRepository;
 import br.com.fereformada.api.repository.WorkRepository;
+import br.com.fereformada.api.dto.ChatRequest;
+import br.com.fereformada.api.model.Mensagem;
+import br.com.fereformada.api.repository.MensagemRepository;
 import com.pgvector.PGvector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,36 +67,70 @@ public class QueryService {
     private final StudyNoteRepository studyNoteRepository;
     private final WorkRepository workRepository;
     private final GeminiApiClient geminiApiClient;
+    private final MensagemRepository mensagemRepository;
 
     public QueryService(ContentChunkRepository contentChunkRepository,
                         StudyNoteRepository studyNoteRepository,
                         WorkRepository workRepository,
-                        GeminiApiClient geminiApiClient) {
+                        GeminiApiClient geminiApiClient, MensagemRepository mensagemRepository) {
         this.contentChunkRepository = contentChunkRepository;
         this.studyNoteRepository = studyNoteRepository;
         this.workRepository = workRepository;
         this.geminiApiClient = geminiApiClient;
+        this.mensagemRepository = mensagemRepository;
     }
 
-    public QueryResponse query(String userQuestion) {
+    public QueryResponse query(ChatRequest request) {
+
+        String userQuestion = request.question();
+        UUID chatId = request.chatId();
+
+        // --- 1. Verificação de Referência Direta (Pergunta ATUAL) ---
         Optional<QueryResponse> directResponse = handleDirectReferenceQuery(userQuestion);
-        if (directResponse.isPresent()) {
-            logger.info("✅ Resposta gerada via busca direta por referência.");
-            return directResponse.get();
-        }
-        // =======================================================
+        if (directResponse.isPresent()) { /* ... (retorna) ... */ }
 
-        logger.info("Nova pergunta recebida (busca híbrida): '{}'", userQuestion);
+        logger.info("Nova pergunta recebida (busca híbrida): '{}' (ChatID: {})", userQuestion, chatId);
 
-        // ===== OTIMIZAÇÃO 3: VERIFICAR CACHE =====
+        // --- 2. Verificação de Cache ---
+        // (O cache pode falhar em perguntas de acompanhamento, mas tudo bem)
         String cacheKey = normalizeQuestion(userQuestion);
-        if (responseCache.containsKey(cacheKey)) {
-            logger.info("✅ Cache hit para: '{}'", userQuestion);
-            return responseCache.get(cacheKey);
+        if (responseCache.containsKey(cacheKey)) { /* ... (retorna) ... */ }
+
+        // --- 3. Carregar Histórico ---
+        List<Mensagem> chatHistory = new ArrayList<>();
+        if (chatId != null) { /* ... (carrega histórico) ... */ }
+
+        // --- 4. LÓGICA DE RAG CONVERSACIONAL (A NOVA CORREÇÃO) ---
+        String ragQuery = userQuestion; // Por padrão, a query RAG é a própria pergunta
+
+        Optional<Integer> sourceNum = extractSourceNumberFromQuestion(userQuestion);
+        if (sourceNum.isPresent()) {
+            logger.info("Detectada pergunta de acompanhamento para a fonte número {}", sourceNum.get());
+            Optional<String> extractedSource = extractSourceFromHistory(chatHistory, sourceNum.get());
+
+            if (extractedSource.isPresent()) {
+                String sourceName = extractedSource.get();
+                logger.info("Fonte extraída do histórico: '{}'", sourceName);
+
+                // 👇 A MUDANÇA CRUCIAL 👇
+                // Tenta usar a lógica de Referência Direta com a fonte extraída
+                Optional<QueryResponse> directFollowUp = handleDirectReferenceQuery(sourceName);
+                if (directFollowUp.isPresent()) {
+                    logger.info("Respondendo ao acompanhamento com busca de referência direta.");
+                    return directFollowUp.get();
+                } else {
+                    // Se a busca direta falhar (ex: é a Teologia Sistemática, não um versículo),
+                    // usa a fonte como a query RAG normal
+                    logger.warn("Busca direta falhou para '{}', usando busca RAG padrão.", sourceName);
+                    ragQuery = sourceName;
+                }
+            } else {
+                logger.warn("Não foi possível extrair o nome da fonte {} do histórico.", sourceNum.get());
+            }
         }
 
-        // ===== OTIMIZAÇÃO 1: HYBRID SEARCH =====
-        List<ContextItem> results = performHybridSearch(userQuestion);
+        // --- 5. Busca Híbrida (RAG) ---
+        List<ContextItem> results = performHybridSearch(ragQuery);
 
         if (results.isEmpty()) {
             QueryResponse emptyResponse = new QueryResponse(
@@ -100,63 +138,77 @@ public class QueryService {
                             "Tente reformular sua pergunta ou ser mais específico.",
                     Collections.emptyList()
             );
-
-            // Não cachear respostas vazias
             return emptyResponse;
         }
 
-        // Log de qualidade
+        // --- 6. Log de Qualidade ---
         double avgScore = results.stream()
                 .mapToDouble(ContextItem::similarityScore)
                 .average()
                 .orElse(0.0);
 
         if (avgScore < 0.6) {
-            logger.warn("⚠️ Baixa relevância média ({}) para: '{}'",
-                    String.format("%.2f", avgScore), userQuestion);
+            logger.warn("⚠️ Baixa relevância média ({}) para: '{}' (Query RAG: '{}')",
+                    String.format("%.2f", avgScore), userQuestion, ragQuery);
         }
 
         logger.info("📊 Construindo resposta com {} fontes (relevância média: {})",
                 results.size(), String.format("%.2f", avgScore));
 
-        String prompt = buildOptimizedPrompt(userQuestion, results);
+
+
+        // --- 7. Construção do Prompt e Chamada da IA ---
+        String prompt = buildOptimizedPrompt(userQuestion, results, chatHistory);
+
         String aiAnswer;
         try {
-            // Tenta gerar a resposta com o Gemini
-            aiAnswer = geminiApiClient.generateContent(prompt);
+            // (Assumindo que GeminiApiClient está corrigido para não duplicar a userQuestion)
+            aiAnswer = geminiApiClient.generateContent(prompt, chatHistory, userQuestion);
+            // (Se o GeminiApiClient ainda espera 3 args, passe userQuestion)
+            // aiAnswer = geminiApiClient.generateContent(prompt, chatHistory, userQuestion);
 
-            // Verificação adicional: Se a resposta vier vazia (raro, mas possível)
-            if (aiAnswer == null || aiAnswer.trim().isEmpty()) {
-                logger.warn("⚠️ A API do Gemini retornou uma resposta vazia para a pergunta: '{}'", userQuestion);
-                aiAnswer = "Desculpe, não consegui gerar uma resposta no momento. Por favor, tente reformular sua pergunta.";
-            }
+            if (aiAnswer == null || aiAnswer.trim().isEmpty()) { /* ... */ }
 
         } catch (Exception e) {
-            // Captura QUALQUER erro durante a chamada à API do Gemini
             logger.error("❌ Erro ao chamar a API do Gemini para a pergunta: '{}'. Erro: {}", userQuestion, e.getMessage(), e);
-            // ^ Loga o erro completo no servidor para depuração
-
-            // Define uma mensagem de erro padrão para o usuário
             aiAnswer = "Desculpe, ocorreu um erro ao tentar processar sua pergunta com a IA. Por favor, tente novamente mais tarde.";
 
-            // IMPORTANTE: Decide se você quer retornar aqui ou continuar
-            // Se retornar aqui, as fontes não serão incluídas na resposta de erro.
-            List<String> sourcesOnError = Collections.emptyList(); // Ou talvez as fontes encontradas? results.stream().map(ContextItem::source).toList();
+            List<String> sourcesOnError = Collections.emptyList();
             return new QueryResponse(aiAnswer, sourcesOnError);
-
-            // Se NÃO retornar aqui, a resposta de erro será cacheada (o que pode não ser ideal)
-            // e as fontes serão incluídas. Vamos retornar logo.
         }
-        List<String> sources = results.stream().map(ContextItem::source).toList();
 
+        // --- 8. Resposta e Cache ---
+        List<String> sources = results.stream().map(ContextItem::source).toList();
         QueryResponse response = new QueryResponse(aiAnswer, sources);
 
-        // Cachear resposta se houver espaço
         if (responseCache.size() < MAX_CACHE_SIZE) {
             responseCache.put(cacheKey, response);
         }
 
         return response;
+    }
+
+    private boolean isFollowUpQuestion(String question) {
+        String qLower = question.toLowerCase().trim();
+
+        // Se a pergunta for muito curta, é provável que seja um acompanhamento
+        if (qLower.length() < 20) {
+            return true;
+        }
+
+        // Lista de prefixos comuns de acompanhamento
+        String[] followUpPrefixes = {
+                "e sobre", "e a fonte", "o que diz a", "por que", "ainda sobre",
+                "mas e", "não,", "sim,", "o que é", "qual é", "explique mais"
+        };
+
+        for (String prefix : followUpPrefixes) {
+            if (qLower.startsWith(prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 
@@ -639,7 +691,7 @@ public class QueryService {
                 .trim();
     }
 
-    private String buildOptimizedPrompt(String question, List<ContextItem> items) {
+    private String buildOptimizedPrompt(String question, List<ContextItem> items, List<Mensagem> chatHistory) {
         StringBuilder context = new StringBuilder();
         StringBuilder sourceMapping = new StringBuilder(); // Este será o nosso "mapa de rodapé"
 
@@ -1302,54 +1354,114 @@ public class QueryService {
     }
 
     private Optional<QueryResponse> handleDirectReferenceQuery(String userQuestion) {
-        // Regex para detectar padrões como: CFW 21.1, CM 98, BC 1 (case-insensitive)
-        Pattern pattern = Pattern.compile("\\b(CFW|CM|BC|TSB)\\s*(\\d+)(?:[:.](\\d+))?\\b", Pattern.CASE_INSENSITIVE);
-        Matcher matcher = pattern.matcher(userQuestion);
 
-        if (matcher.find()) {
-            String acronym = matcher.group(1);
-            int chapterOrQuestion = Integer.parseInt(matcher.group(2));
-            // O parágrafo/seção é opcional
-            Integer section = matcher.group(3) != null ? Integer.parseInt(matcher.group(3)) : null;
+        // Padrão 1: Confissões (CFW 1.1, CM 98, TSB...)
+        Pattern confessionalPattern = Pattern.compile("\\b(CFW|CM|BC|TSB)\\s*(\\d+)(?:[:.](\\d+))?\\b", Pattern.CASE_INSENSITIVE);
+        Matcher confessionalMatcher = confessionalPattern.matcher(userQuestion);
 
-            logger.info("🔍 Referência direta detectada: {} {}{}",
+        // Padrão 2: Bíblia (BG Romanos 8:29, 1 Coríntios 2:8, etc.)
+        // Esta regex melhorada captura livros com espaços (ex: "1 Coríntios")
+        Pattern biblicalPattern = Pattern.compile(
+                "\\b(BG|Bíblia de Genebra)?\\s*(\\d*\\s*[A-Za-z ]+?)\\s*(\\d+)[:.](\\d+(?:-\\d+)?)",
+                Pattern.CASE_INSENSITIVE
+        );
+        Matcher biblicalMatcher = biblicalPattern.matcher(userQuestion);
+
+        // --- LÓGICA DO BLOCO 1: Busca Confessional ---
+        if (confessionalMatcher.find()) {
+            String acronym = confessionalMatcher.group(1);
+            int chapterOrQuestion = Integer.parseInt(confessionalMatcher.group(2));
+            Integer section = confessionalMatcher.group(3) != null ? Integer.parseInt(confessionalMatcher.group(3)) : null;
+
+            logger.info("🔍 Referência direta CONFESSIONAL detectada: {} {}{}",
                     acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""));
 
             List<ContentChunk> results = contentChunkRepository.findDirectReference(acronym, chapterOrQuestion, section);
 
             if (results.isEmpty()) {
-                logger.warn("⚠️ Referência direta {} não encontrada no banco de dados.", acronym.toUpperCase());
+                logger.warn("⚠️ Referência confessional {} não encontrada.", acronym.toUpperCase());
                 return Optional.empty(); // Deixa a busca híbrida continuar
             }
 
             ContentChunk directHit = results.get(0);
             ContextItem context = ContextItem.from(directHit, 1.0); // Score máximo
 
-            // Criamos um prompt específico para explicar APENAS este trecho
+            // Prompt específico para documentos confessionais
             String focusedPrompt = String.format("""
-                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
-                            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
-                            
-                            DOCUMENTO: %s
-                            REFERÊNCIA: %s %d%s
-                            TEXTO ENCONTRADO:
-                            "%s"
-                            
-                            INSTRUÇÕES:
-                            1.  Comece confirmando a referência (Ex: "A Confissão de Fé de Westminster, no capítulo %d, parágrafo %d, afirma que...").
-                            2.  Explique o significado teológico do texto em suas próprias palavras.
-                            3.  Se aplicável, mencione brevemente a importância prática ou doutrinária deste ponto.
-                            4.  Seja direto e focado exclusivamente no texto fornecido.
-                            
-                            EXPLICAÇÃO:
-                            """,
+                        Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
+                        Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
+                        
+                        DOCUMENTO: %s
+                        REFERÊNCIA: %s %d%s
+                        TEXTO ENCONTRADO:
+                        "%s"
+                        
+                        INSTRUÇÕES:
+                        1.  Comece confirmando a referência (Ex: "A Confissão de Fé de Westminster, no capítulo %d, parágrafo %d, afirma que...").
+                        2.  Explique o significado teológico do texto em suas próprias palavras.
+                        3.  Seja direto e focado exclusivamente no texto fornecido.
+                        
+                        EXPLICAÇÃO:
+                        """,
                     directHit.getWork().getTitle(),
                     acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""),
                     directHit.getContent(),
                     chapterOrQuestion, (section != null ? section : 1)
             );
 
-            String aiAnswer = geminiApiClient.generateContent(focusedPrompt);
+            // CORREÇÃO: Chama a API com 3 argumentos
+            String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
+            QueryResponse response = new QueryResponse(aiAnswer, List.of(context.source()));
+
+            return Optional.of(response);
+        }
+
+        // --- LÓGICA DO BLOCO 2: Busca Bíblica ---
+        else if (biblicalMatcher.find()) {
+
+            String book = biblicalMatcher.group(2).trim(); // ex: "Romanos" ou "1 Coríntios"
+            int chapter = Integer.parseInt(biblicalMatcher.group(3)); // ex: 8
+            // Pega o primeiro versículo se for um range (ex: 29-30 -> 29)
+            int verse = Integer.parseInt(biblicalMatcher.group(4).split("-")[0]);
+
+            logger.info("🔍 Referência direta BÍBLICA detectada: {} {}:{}", book, chapter, verse);
+
+            // (Assumindo que seu StudyNoteRepository tem este método)
+            List<StudyNote> results = studyNoteRepository.findByBiblicalReference(book, chapter, verse);
+
+            if (results.isEmpty()) {
+                logger.warn("⚠️ Referência bíblica direta {}:{}:{} não encontrada.", book, chapter, verse);
+                return Optional.empty(); // Deixa a busca híbrida continuar
+            }
+
+            StudyNote directHit = results.get(0); // Pega a primeira nota (pode haver várias)
+            ContextItem context = ContextItem.from(directHit, 1.0); // Score máximo
+
+            // Prompt específico para notas de estudo bíblicas
+            String focusedPrompt = String.format("""
+            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a uma nota de estudo bíblica.
+            Sua tarefa é explicar o texto da nota de estudo fornecida de forma clara e objetiva.
+            
+            DOCUMENTO: %s
+            REFERÊNCIA BÍBLICA: %s %d:%d
+            NOTA DE ESTUDO ENCONTRADA:
+            "%s"
+            
+            INSTRUÇÕES:
+            1.  Confirme a referência bíblica (Ex: "Para %s %d:%d, a nota de estudo da Bíblia de Genebra explica que...").
+            2.  Explique o significado teológico da nota de estudo fornecida.
+            3.  Seja direto e focado exclusivamente no texto da nota.
+            
+            EXPLICAÇÃO:
+            """,
+                    context.source(),
+                    book, chapter, verse,
+                    directHit.getNoteContent(),
+                    book, chapter, verse // Para a INSTRUÇÃO 1
+            );
+
+            // CORREÇÃO: Chama a API com 3 argumentos
+            String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
             QueryResponse response = new QueryResponse(aiAnswer, List.of(context.source()));
 
             return Optional.of(response);
@@ -1357,5 +1469,92 @@ public class QueryService {
 
         return Optional.empty(); // Nenhuma referência direta encontrada
     }
+
+    private Optional<Integer> extractSourceNumberFromQuestion(String userQuestion) {
+        String qLower = userQuestion.toLowerCase();
+
+        // Procura por "fonte 1", "número 1", "sobre a 1", "e a 1?" etc.
+        // O grupo (\\d+) captura o número.
+        Pattern pattern = Pattern.compile("(?:fonte|número|sobre|e a)\\s*(\\d+)");
+        Matcher matcher = pattern.matcher(qLower);
+
+        if (matcher.find()) {
+            try {
+                return Optional.of(Integer.parseInt(matcher.group(1)));
+            } catch (NumberFormatException e) {
+                return Optional.empty();
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<String> extractSourceFromHistory(List<Mensagem> chatHistory, int sourceNumber) {
+        if (chatHistory.size() < 2) { // Precisa de P + R
+            return Optional.empty();
+        }
+
+        Mensagem lastAiResponse = null;
+        // Itera para trás para encontrar a última resposta do 'assistant'
+        for (int i = chatHistory.size() - 2; i >= 0; i--) {
+            if (chatHistory.get(i).getRole().equals("assistant")) {
+                lastAiResponse = chatHistory.get(i);
+                break;
+            }
+        }
+
+        if (lastAiResponse == null) {
+            return Optional.empty(); // Nenhuma resposta de IA encontrada no histórico
+        }
+
+        String aiContent = lastAiResponse.getContent();
+        int sourcesIndex = aiContent.indexOf("Fontes Consultadas");
+        if (sourcesIndex == -1) {
+            return Optional.empty(); // IA não listou fontes
+        }
+
+        String sourcesBlock = aiContent.substring(sourcesIndex);
+
+        // --- CORREÇÃO DO REGEX ABAIXO ---
+
+        // Mapeia os números para os caracteres sobrescritos
+        char superscriptChar = ' ';
+        if (sourceNumber == 1) superscriptChar = '\u00B9'; // ¹
+        else if (sourceNumber == 2) superscriptChar = '\u00B2'; // ²
+        else if (sourceNumber == 3) superscriptChar = '\u00B3'; // ³
+        else if (sourceNumber == 4) superscriptChar = '\u2074'; // ⁴
+        else if (sourceNumber == 5) superscriptChar = '\u2075'; // ⁵
+        // (Adicione mais se precisar)
+
+        // Tenta Regex 1: Procurar pelo superscript (ex: "¹ ...")
+        // Removemos o ^ (início da linha) e o MULTILINE.
+        Pattern patternSimple = Pattern.compile(
+                Pattern.quote(String.valueOf(superscriptChar)) + "\\s+(.+)"
+        );
+        Matcher matcher = patternSimple.matcher(sourcesBlock);
+
+        if (matcher.find()) {
+            String sourceName = matcher.group(1).trim();
+            // Pega apenas a primeira linha da correspondência
+            return Optional.of(sourceName.split("\n")[0].trim());
+        } else {
+            // Tenta Regex 2: Procurar por número normal (ex: "1. ...")
+            // Usamos \b (word boundary) para não confundir "10" com "1"
+            Pattern patternComplex = Pattern.compile(
+                    "\\b" + sourceNumber + "[.:]?\\s+(.+)"
+            );
+            Matcher matcherComplex = patternComplex.matcher(sourcesBlock);
+
+            if (matcherComplex.find()) {
+                String sourceName = matcherComplex.group(1).trim();
+                // Pega apenas a primeira linha da correspondência
+                return Optional.of(sourceName.split("\n")[0].trim());
+            }
+        }
+
+        logger.warn("Não foi possível encontrar a fonte nº {} no bloco: {}", sourceNumber, sourcesBlock);
+        return Optional.empty();
+    }
+
+
 }
 

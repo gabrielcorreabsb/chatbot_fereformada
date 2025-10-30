@@ -1,5 +1,6 @@
 package br.com.fereformada.api.controller;
 
+import br.com.fereformada.api.dto.ChatRequest; // <-- 1. ADICIONE ESTE IMPORT
 import br.com.fereformada.api.dto.QueryRequest;
 import br.com.fereformada.api.dto.QueryResponse;
 import br.com.fereformada.api.service.QueryService;
@@ -17,7 +18,7 @@ import java.util.Map;
 public class QueryController {
 
     private final QueryService queryService;
-    private final GeminiApiClient geminiApiClient;
+    private final GeminiApiClient geminiApiClient; // (Este GeminiApiClient provavelmente não é mais necessário aqui se o QueryService o gerencia)
 
     public QueryController(QueryService queryService, GeminiApiClient geminiApiClient) {
         this.queryService = queryService;
@@ -26,8 +27,11 @@ public class QueryController {
 
     @PostMapping
     public QueryResponse askQuestion(@RequestBody QueryRequest request) {
-        // A URL para este endpoint é: POST /api/query
-        return queryService.query(request.question());
+
+
+        ChatRequest chatRequest = new ChatRequest(request.question(), null);
+
+        return queryService.query(chatRequest);
     }
 
 }
