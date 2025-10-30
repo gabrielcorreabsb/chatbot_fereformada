@@ -1,16 +1,11 @@
 package br.com.fereformada.api.controller;
 
-
 // Imports dos DTOs
-
-import br.com.fereformada.api.dto.*;
+import br.com.fereformada.api.dto.*; // Importa todos os DTOs
 
 // Imports dos Serviços
-import br.com.fereformada.api.model.Mensagem;
-import br.com.fereformada.api.repository.ConversaRepository;
-import br.com.fereformada.api.repository.MensagemRepository;
-import br.com.fereformada.api.service.QueryService;      // Seu serviço de RAG
-import br.com.fereformada.api.service.HistoricoService; // O novo serviço de DB
+import br.com.fereformada.api.service.QueryService;
+import br.com.fereformada.api.service.HistoricoService;
 
 // Import do Modelo
 import br.com.fereformada.api.model.Conversa;
@@ -31,43 +26,51 @@ public class ChatController {
     private final QueryService queryService;
     private final HistoricoService historicoService;
 
-
     // Injetamos os dois serviços
     public ChatController(QueryService queryService, HistoricoService historicoService) {
         this.queryService = queryService;
         this.historicoService = historicoService;
-
     }
 
+    /**
+     * Ponto de entrada principal para uma nova mensagem de chat.
+     */
     @PostMapping
-    public ChatResponse handleChat(
+    // 👇 O tipo de retorno agora é o nosso novo DTO
+    public ChatApiResponse handleChat(
             @Valid @RequestBody ChatRequest request,
             Authentication authentication
     ) {
         UUID userId = UUID.fromString((String) authentication.getPrincipal());
 
         // 1. Salva a pergunta do usuário e obtém a conversa (nova ou existente)
-        //    (Assumindo que salvarMensagemUsuario retorna a Conversa)
         Conversa conversa = historicoService.salvarMensagemUsuario(
                 userId,
                 request.question(),
                 request.chatId()
         );
 
-        // 2. CRIA UM NOVO ChatRequest ATUALIZADO com o ID da conversa
-        //    Isso garante que o QueryService sempre saiba em qual chat está.
+        // 2. Cria um novo ChatRequest ATUALIZADO com o ID da conversa
         ChatRequest updatedRequest = new ChatRequest(request.question(), conversa.getId());
 
-        // 3. Chama o QueryService com o request ATUALIZADO
-        QueryResponse queryResponse = queryService.query(updatedRequest);
+        // 3. Chama o QueryService (que agora retorna QueryServiceResult)
+        // (Este é o seu próximo passo de refatoração no QueryService)
+        QueryServiceResult queryResult = queryService.query(updatedRequest);
 
         // 4. Salva a resposta da IA na mesma conversa
-        historicoService.salvarMensagemIA(conversa, queryResponse.answer());
+        historicoService.salvarMensagemIA(conversa, queryResult.answer());
 
-        // 5. Retorna a resposta e o ID da conversa
-        return new ChatResponse(queryResponse.answer(), conversa.getId());
+        // 5. Monta e retorna a resposta final completa para o front-end
+        return new ChatApiResponse(
+                queryResult.answer(),      // A resposta da IA
+                queryResult.references(),  // A lista de fontes clicáveis
+                conversa.getId()           // O ID do chat
+        );
     }
 
+    /**
+     * Retorna a lista de conversas do usuário (para a sidebar).
+     */
     @GetMapping
     public ResponseEntity<List<ConversaDTO>> getHistoricoConversas(Authentication authentication) {
         UUID userId = UUID.fromString((String) authentication.getPrincipal());
@@ -75,7 +78,9 @@ public class ChatController {
         return ResponseEntity.ok(conversas);
     }
 
-    // --- MÉTODO GET 2 (Atualizado) ---
+    /**
+     * Retorna todas as mensagens de uma conversa específica.
+     */
     @GetMapping("/{chatId}")
     public ResponseEntity<List<MensagemDTO>> getMensagensDaConversa(
             @PathVariable UUID chatId,
@@ -83,8 +88,7 @@ public class ChatController {
 
         UUID userId = UUID.fromString((String) authentication.getPrincipal());
 
-        // Toda a lógica de validação e busca está no serviço agora
-        // (Vamos adicionar um try/catch depois)
+        // (A lógica de segurança e busca já está no serviço)
         List<MensagemDTO> mensagens = historicoService.getMensagensPorConversa(chatId, userId);
         return ResponseEntity.ok(mensagens);
     }

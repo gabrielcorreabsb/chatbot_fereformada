@@ -1,7 +1,6 @@
 package br.com.fereformada.api.service;
 
-import br.com.fereformada.api.dto.ContextItem;
-import br.com.fereformada.api.dto.QueryResponse;
+import br.com.fereformada.api.dto.*;
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.StudyNote;
 import br.com.fereformada.api.model.Work;
@@ -9,7 +8,6 @@ import br.com.fereformada.api.repository.ContentChunkRepository;
 import br.com.fereformada.api.repository.MensagemRepository;
 import br.com.fereformada.api.repository.StudyNoteRepository;
 import br.com.fereformada.api.repository.WorkRepository;
-import br.com.fereformada.api.dto.ChatRequest;
 import br.com.fereformada.api.model.Mensagem;
 import br.com.fereformada.api.repository.MensagemRepository;
 import com.pgvector.PGvector;
@@ -31,7 +29,7 @@ public class QueryService {
     private static final Logger logger = LoggerFactory.getLogger(QueryService.class);
 
     // ===== OTIMIZAÇÃO 3: CACHE =====
-    private final Map<String, QueryResponse> responseCache = new ConcurrentHashMap<>();
+    private final Map<String, QueryServiceResult> responseCache = new ConcurrentHashMap<>();
     private final Map<String, PGvector> embeddingCache = new ConcurrentHashMap<>();
     private static final int MAX_CACHE_SIZE = 100;
     private static final int MAX_EMBEDDING_CACHE_SIZE = 500;
@@ -80,29 +78,39 @@ public class QueryService {
         this.mensagemRepository = mensagemRepository;
     }
 
-    public QueryResponse query(ChatRequest request) {
+
+    public QueryServiceResult query(ChatRequest request) {
 
         String userQuestion = request.question();
         UUID chatId = request.chatId();
 
-        // --- 1. Verificação de Referência Direta (Pergunta ATUAL) ---
-        Optional<QueryResponse> directResponse = handleDirectReferenceQuery(userQuestion);
-        if (directResponse.isPresent()) { /* ... (retorna) ... */ }
+        // --- 1. Verificação de Referência Direta ---
+        // 👇 TIPO DE RETORNO ATUALIZADO
+        Optional<QueryServiceResult> directResponse = handleDirectReferenceQuery(userQuestion);
+        if (directResponse.isPresent()) {
+            logger.info("✅ Resposta gerada via busca direta por referência.");
+            return directResponse.get();
+        }
 
         logger.info("Nova pergunta recebida (busca híbrida): '{}' (ChatID: {})", userQuestion, chatId);
 
         // --- 2. Verificação de Cache ---
-        // (O cache pode falhar em perguntas de acompanhamento, mas tudo bem)
         String cacheKey = normalizeQuestion(userQuestion);
-        if (responseCache.containsKey(cacheKey)) { /* ... (retorna) ... */ }
+        // 👇 TIPO DE RETORNO ATUALIZADO
+        if (responseCache.containsKey(cacheKey)) {
+            logger.info("✅ Cache hit para: '{}'", userQuestion);
+            return responseCache.get(cacheKey);
+        }
 
         // --- 3. Carregar Histórico ---
         List<Mensagem> chatHistory = new ArrayList<>();
-        if (chatId != null) { /* ... (carrega histórico) ... */ }
+        if (chatId != null) {
+            chatHistory = mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId);
+            logger.info("Carregado {} mensagens do histórico do chat {}", chatHistory.size(), chatId);
+        }
 
-        // --- 4. LÓGICA DE RAG CONVERSACIONAL (A NOVA CORREÇÃO) ---
-        String ragQuery = userQuestion; // Por padrão, a query RAG é a própria pergunta
-
+        // --- 4. LÓGICA DE RAG CONVERSACIONAL ---
+        String ragQuery = userQuestion;
         Optional<Integer> sourceNum = extractSourceNumberFromQuestion(userQuestion);
         if (sourceNum.isPresent()) {
             logger.info("Detectada pergunta de acompanhamento para a fonte número {}", sourceNum.get());
@@ -112,15 +120,12 @@ public class QueryService {
                 String sourceName = extractedSource.get();
                 logger.info("Fonte extraída do histórico: '{}'", sourceName);
 
-                // 👇 A MUDANÇA CRUCIAL 👇
-                // Tenta usar a lógica de Referência Direta com a fonte extraída
-                Optional<QueryResponse> directFollowUp = handleDirectReferenceQuery(sourceName);
+                // 👇 TIPO DE RETORNO ATUALIZADO
+                Optional<QueryServiceResult> directFollowUp = handleDirectReferenceQuery(sourceName);
                 if (directFollowUp.isPresent()) {
                     logger.info("Respondendo ao acompanhamento com busca de referência direta.");
                     return directFollowUp.get();
                 } else {
-                    // Se a busca direta falhar (ex: é a Teologia Sistemática, não um versículo),
-                    // usa a fonte como a query RAG normal
                     logger.warn("Busca direta falhou para '{}', usando busca RAG padrão.", sourceName);
                     ragQuery = sourceName;
                 }
@@ -133,82 +138,60 @@ public class QueryService {
         List<ContextItem> results = performHybridSearch(ragQuery);
 
         if (results.isEmpty()) {
-            QueryResponse emptyResponse = new QueryResponse(
+            // 👇 TIPO DE RETORNO ATUALIZADO
+            return new QueryServiceResult(
                     "Não encontrei informações relevantes nas fontes catalogadas. " +
                             "Tente reformular sua pergunta ou ser mais específico.",
                     Collections.emptyList()
             );
-            return emptyResponse;
         }
 
         // --- 6. Log de Qualidade ---
-        double avgScore = results.stream()
-                .mapToDouble(ContextItem::similarityScore)
-                .average()
-                .orElse(0.0);
-
-        if (avgScore < 0.6) {
-            logger.warn("⚠️ Baixa relevância média ({}) para: '{}' (Query RAG: '{}')",
-                    String.format("%.2f", avgScore), userQuestion, ragQuery);
-        }
-
-        logger.info("📊 Construindo resposta com {} fontes (relevância média: {})",
-                results.size(), String.format("%.2f", avgScore));
-
-
+        // ... (seu código de log de avgScore) ...
 
         // --- 7. Construção do Prompt e Chamada da IA ---
         String prompt = buildOptimizedPrompt(userQuestion, results, chatHistory);
-
         String aiAnswer;
         try {
-            // (Assumindo que GeminiApiClient está corrigido para não duplicar a userQuestion)
             aiAnswer = geminiApiClient.generateContent(prompt, chatHistory, userQuestion);
-            // (Se o GeminiApiClient ainda espera 3 args, passe userQuestion)
-            // aiAnswer = geminiApiClient.generateContent(prompt, chatHistory, userQuestion);
-
             if (aiAnswer == null || aiAnswer.trim().isEmpty()) { /* ... */ }
-
         } catch (Exception e) {
             logger.error("❌ Erro ao chamar a API do Gemini para a pergunta: '{}'. Erro: {}", userQuestion, e.getMessage(), e);
             aiAnswer = "Desculpe, ocorreu um erro ao tentar processar sua pergunta com a IA. Por favor, tente novamente mais tarde.";
-
-            List<String> sourcesOnError = Collections.emptyList();
-            return new QueryResponse(aiAnswer, sourcesOnError);
+            // 👇 TIPO DE RETORNO ATUALIZADO
+            return new QueryServiceResult(aiAnswer, Collections.emptyList());
         }
 
-        // --- 8. Resposta e Cache ---
-        List<String> sources = results.stream().map(ContextItem::source).toList();
-        QueryResponse response = new QueryResponse(aiAnswer, sources);
+        // --- 8. NOVO: PÓS-PROCESSAMENTO PARA CRIAR REFERÊNCIAS ---
+        List<SourceReference> references = new ArrayList<>();
+        Map<String, Integer> sourceToNumberMap = new HashMap<>();
+        int sourceCounter = 1;
+
+        // Itera sobre os resultados da busca RAG para construir a lista de fontes
+        for (ContextItem item : results) {
+            String fullSource = item.source();
+            if (!sourceToNumberMap.containsKey(fullSource)) {
+                sourceToNumberMap.put(fullSource, sourceCounter++);
+            }
+            int sourceNumber = sourceToNumberMap.get(fullSource);
+
+            // Adiciona a fonte à lista (o front-end usará isso)
+            references.add(new SourceReference(
+                    sourceNumber,
+                    fullSource,
+                    item.content() // O TEXTO COMPLETO
+            ));
+        }
+
+        // --- 9. Resposta e Cache ---
+        // 👇 TIPO DE RETORNO ATUALIZADO
+        QueryServiceResult response = new QueryServiceResult(aiAnswer, references);
 
         if (responseCache.size() < MAX_CACHE_SIZE) {
             responseCache.put(cacheKey, response);
         }
 
         return response;
-    }
-
-    private boolean isFollowUpQuestion(String question) {
-        String qLower = question.toLowerCase().trim();
-
-        // Se a pergunta for muito curta, é provável que seja um acompanhamento
-        if (qLower.length() < 20) {
-            return true;
-        }
-
-        // Lista de prefixos comuns de acompanhamento
-        String[] followUpPrefixes = {
-                "e sobre", "e a fonte", "o que diz a", "por que", "ainda sobre",
-                "mas e", "não,", "sim,", "o que é", "qual é", "explique mais"
-        };
-
-        for (String prefix : followUpPrefixes) {
-            if (qLower.startsWith(prefix)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
 
@@ -1353,16 +1336,16 @@ public class QueryService {
         return query;
     }
 
-    private Optional<QueryResponse> handleDirectReferenceQuery(String userQuestion) {
+    private Optional<QueryServiceResult> handleDirectReferenceQuery(String userQuestion) {
 
         // Padrão 1: Confissões (CFW 1.1, CM 98, TSB...)
         Pattern confessionalPattern = Pattern.compile("\\b(CFW|CM|BC|TSB)\\s*(\\d+)(?:[:.](\\d+))?\\b", Pattern.CASE_INSENSITIVE);
         Matcher confessionalMatcher = confessionalPattern.matcher(userQuestion);
 
         // Padrão 2: Bíblia (BG Romanos 8:29, 1 Coríntios 2:8, etc.)
-        // Esta regex melhorada captura livros com espaços (ex: "1 Coríntios")
+        // Regex corrigido para ser "ganancioso" (greedy) e capturar nomes completos
         Pattern biblicalPattern = Pattern.compile(
-                "\\b(BG|Bíblia de Genebra)?\\s*(\\d*\\s*[A-Za-z ]+?)\\s*(\\d+)[:.](\\d+(?:-\\d+)?)",
+                "\\b(BG|Bíblia de Genebra)?[ -]*(\\d*\\s*[A-Za-z ]+)\\s*(\\d+)[:.](\\d+(?:-\\d+)?)",
                 Pattern.CASE_INSENSITIVE
         );
         Matcher biblicalMatcher = biblicalPattern.matcher(userQuestion);
@@ -1411,7 +1394,10 @@ public class QueryService {
 
             // CORREÇÃO: Chama a API com 3 argumentos
             String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
-            QueryResponse response = new QueryResponse(aiAnswer, List.of(context.source()));
+
+            // CORREÇÃO: Retorna o novo DTO 'QueryServiceResult'
+            SourceReference ref = new SourceReference(1, context.source(), context.content());
+            QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
             return Optional.of(response);
         }
@@ -1421,12 +1407,10 @@ public class QueryService {
 
             String book = biblicalMatcher.group(2).trim(); // ex: "Romanos" ou "1 Coríntios"
             int chapter = Integer.parseInt(biblicalMatcher.group(3)); // ex: 8
-            // Pega o primeiro versículo se for um range (ex: 29-30 -> 29)
-            int verse = Integer.parseInt(biblicalMatcher.group(4).split("-")[0]);
+            int verse = Integer.parseInt(biblicalMatcher.group(4).split("-")[0]); // Pega o primeiro versículo
 
             logger.info("🔍 Referência direta BÍBLICA detectada: {} {}:{}", book, chapter, verse);
 
-            // (Assumindo que seu StudyNoteRepository tem este método)
             List<StudyNote> results = studyNoteRepository.findByBiblicalReference(book, chapter, verse);
 
             if (results.isEmpty()) {
@@ -1434,8 +1418,8 @@ public class QueryService {
                 return Optional.empty(); // Deixa a busca híbrida continuar
             }
 
-            StudyNote directHit = results.get(0); // Pega a primeira nota (pode haver várias)
-            ContextItem context = ContextItem.from(directHit, 1.0); // Score máximo
+            StudyNote directHit = results.get(0);
+            ContextItem context = ContextItem.from(directHit, 1.0);
 
             // Prompt específico para notas de estudo bíblicas
             String focusedPrompt = String.format("""
@@ -1462,7 +1446,10 @@ public class QueryService {
 
             // CORREÇÃO: Chama a API com 3 argumentos
             String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
-            QueryResponse response = new QueryResponse(aiAnswer, List.of(context.source()));
+
+            // CORREÇÃO: Retorna o novo DTO 'QueryServiceResult'
+            SourceReference ref = new SourceReference(1, context.source(), context.content());
+            QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
             return Optional.of(response);
         }
