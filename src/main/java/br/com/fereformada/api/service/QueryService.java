@@ -120,7 +120,33 @@ public class QueryService {
                 results.size(), String.format("%.2f", avgScore));
 
         String prompt = buildOptimizedPrompt(userQuestion, results);
-        String aiAnswer = geminiApiClient.generateContent(prompt);
+        String aiAnswer;
+        try {
+            // Tenta gerar a resposta com o Gemini
+            aiAnswer = geminiApiClient.generateContent(prompt);
+
+            // Verificação adicional: Se a resposta vier vazia (raro, mas possível)
+            if (aiAnswer == null || aiAnswer.trim().isEmpty()) {
+                logger.warn("⚠️ A API do Gemini retornou uma resposta vazia para a pergunta: '{}'", userQuestion);
+                aiAnswer = "Desculpe, não consegui gerar uma resposta no momento. Por favor, tente reformular sua pergunta.";
+            }
+
+        } catch (Exception e) {
+            // Captura QUALQUER erro durante a chamada à API do Gemini
+            logger.error("❌ Erro ao chamar a API do Gemini para a pergunta: '{}'. Erro: {}", userQuestion, e.getMessage(), e);
+            // ^ Loga o erro completo no servidor para depuração
+
+            // Define uma mensagem de erro padrão para o usuário
+            aiAnswer = "Desculpe, ocorreu um erro ao tentar processar sua pergunta com a IA. Por favor, tente novamente mais tarde.";
+
+            // IMPORTANTE: Decide se você quer retornar aqui ou continuar
+            // Se retornar aqui, as fontes não serão incluídas na resposta de erro.
+            List<String> sourcesOnError = Collections.emptyList(); // Ou talvez as fontes encontradas? results.stream().map(ContextItem::source).toList();
+            return new QueryResponse(aiAnswer, sourcesOnError);
+
+            // Se NÃO retornar aqui, a resposta de erro será cacheada (o que pode não ser ideal)
+            // e as fontes serão incluídas. Vamos retornar logo.
+        }
         List<String> sources = results.stream().map(ContextItem::source).toList();
 
         QueryResponse response = new QueryResponse(aiAnswer, sources);
@@ -396,11 +422,10 @@ public class QueryService {
         // --- Boosts Principais (Multiplicativos, mas com cuidado) ---
 
         // SUPER-BOOST para documento citado diretamente (MANTÉM MULTIPLICATIVO ALTO)
-        if ( (questionLower.contains("catecismo") && source.contains("catecismo")) ||
+        if ((questionLower.contains("catecismo") && source.contains("catecismo")) ||
                 (questionLower.contains("confissão") && source.contains("confissão de fé")) ||
                 (questionLower.contains("institutas") && source.contains("institutas")) ||
-                ((questionLower.contains("teologia sistemática") || questionLower.contains("berkhof")) && source.contains("teologia sistemática")) )
-        {
+                ((questionLower.contains("teologia sistemática") || questionLower.contains("berkhof")) && source.contains("teologia sistemática"))) {
             finalScore *= 1.5; // Reduzido de 2.0 para 1.5 (Boost de 50%)
             logger.debug("    -> SUPER BOOST aplicado");
         }
@@ -614,65 +639,91 @@ public class QueryService {
                 .trim();
     }
 
-    // ===== PROMPT OTIMIZADO =====
     private String buildOptimizedPrompt(String question, List<ContextItem> items) {
         StringBuilder context = new StringBuilder();
+        StringBuilder sourceMapping = new StringBuilder(); // Este será o nosso "mapa de rodapé"
 
-        // ===== NOVO: SEPARAR FONTES BÍBLICAS DAS CONFESSIONAIS =====
-        List<ContextItem> biblicalSources = items.stream()
-                .filter(item -> item.source().contains("Bíblia de Genebra"))
-                .collect(Collectors.toList());
+        // Mapa para rastrear fontes únicas e atribuir um número a elas
+        Map<String, Integer> sourceToNumberMap = new HashMap<>();
+        int sourceCounter = 1;
 
-        List<ContextItem> confessionalSources = items.stream()
-                .filter(item -> !item.source().contains("Bíblia de Genebra"))
-                .collect(Collectors.toList());
+        context.append("FONTES DISPONÍVEIS PARA CONSULTA:\n\n");
 
-        // Mostrar fontes bíblicas primeiro
-        if (!biblicalSources.isEmpty()) {
-            context.append("📖 FUNDAMENTAÇÃO BÍBLICA (Sola Scriptura):\n\n");
-            int biblicalNumber = 1;
-            for (ContextItem item : biblicalSources) {
-                context.append(String.format("[B%d] %s\n", biblicalNumber++, item.source()));
-                context.append("    📜 Texto: ").append(limitContent(item.content(), 600)).append("\n\n");
+        // 1. Constrói o contexto e o mapa de fontes
+        for (ContextItem item : items) {
+            String fullSource = item.source(); // A FONTE INTACTA
+
+            // Verifica se já vimos esta fonte
+            if (!sourceToNumberMap.containsKey(fullSource)) {
+                sourceToNumberMap.put(fullSource, sourceCounter);
+                sourceCounter++;
             }
+
+            int sourceNumber = sourceToNumberMap.get(fullSource);
+            String sourceId = String.format("[%d]", sourceNumber); // [1], [2], etc.
+
+            // Adiciona ao contexto que a IA vai ler
+            context.append(String.format("%s\n", sourceId)); // [1]
+            if (item.question() != null && !item.question().isEmpty()) {
+                context.append("    Pergunta Relacionada: ").append(item.question()).append("\n");
+            }
+            context.append("    Conteúdo: ").append(limitContent(item.content(), 450)).append("\n\n");
         }
 
-        // Depois mostrar fontes confessionais
-        if (!confessionalSources.isEmpty()) {
-            context.append("⛪ DOCUMENTOS CONFESSIONAIS (subordinados à Escritura):\n\n");
-            int confessionalNumber = 1;
-            for (ContextItem item : confessionalSources) {
-                context.append(String.format("[C%d] %s\n", confessionalNumber++, item.source()));
-
-                if (item.question() != null && !item.question().isEmpty()) {
-                    context.append("    📝 Pergunta: ").append(item.question()).append("\n");
-                }
-
-                context.append("    📖 Conteúdo: ").append(limitContent(item.content(), 500)).append("\n");
-                context.append("    🎯 Relevância: ").append(
-                        String.format("%.1f%%", item.similarityScore() * 100)
-                ).append("\n\n");
-            }
+        // 2. Constrói o mapa de referência para o prompt
+        sourceMapping.append("MAPA DE FONTES (Use isto para o rodapé):\n");
+        for (Map.Entry<String, Integer> entry : sourceToNumberMap.entrySet()) {
+            // Ex: [1]: Bíblia de Genebra - Romanos 8:29
+            sourceMapping.append(String.format("[%d]: %s\n", entry.getValue(), entry.getKey()));
         }
 
+        // 3. Constrói o prompt final
         return String.format("""
-                Você é um assistente teológico especialista em Teologia Reformada. Sua tarefa é responder perguntas com base na Bíblia como autoridade final e nos Padrões de Westminster (Confissão, Catecismos) e outros documentos reformados como fiéis exposições da doutrina bíblica.
+                Você é um assistente de pesquisa teológica focado na Tradição Reformada (Calvinista). Sua função é ajudar os usuários a encontrar informações **detalhadas e precisas** baseadas em fontes confiáveis.
                 
-                PRINCÍPIOS DE RESPOSTA:
-                1.  **Fundamento na Escritura (Sola Scriptura):** A Bíblia é a autoridade suprema e a fonte primária da sua resposta. Sempre comece estabelecendo a base bíblica para o tema, usando as fontes [B1, B2, etc.].
-                2.  **Elucidação Confessional:** Utilize os documentos confessionais [C1, C2, etc.] para aprofundar, sistematizar e explicar a doutrina bíblica. Mostre como eles organizam o ensino das Escrituras de forma clara.
-                3.  **Relação Harmoniosa:** A sua resposta deve demonstrar a harmonia entre a Escritura e as confissões. Trate os documentos confessionais como um resumo fiel e autorizado do que a Bíblia ensina.
-                4.  **Clareza e Precisão:** Use uma linguagem teológica precisa, mas clara. Aja como um professor explicando a doutrina reformada.
+                **TAREFA:** Responda a PERGUNTA DO USUÁRIO de forma clara, **completa**, objetiva e prestativa, baseando-se **ESTRITAMENTE** nas FONTES DISPONÍVEIS PARA CONSULTA fornecidas ([1], [2], etc.).
                 
-                FONTES DISPONÍVEIS:
+                **PRINCÍPIOS OBRIGATÓRIOS:**
+                1.  **Fidelidade Absoluta às Fontes:** Sua resposta deve refletir **APENAS** o que está escrito nas fontes. Não adicione interpretações ou informações externas.
+                2.  **Prioridade da Escritura:** Se as fontes bíblicas estiverem disponíveis, comece a resposta com a informação delas.
+                3.  **Clareza e Profundidade:** Seja direto, use linguagem acessível, mas **não simplifique excessivamente**.
+                
+                **REGRAS E RESTRIÇÕES ESTRITAS:**
+                * **NÃO use conhecimento externo.**
+                * **NÃO dê opiniões pessoais.**
+                * **NÃO seja vago.** Use os detalhes específicos das fontes.
+                * **NÃO use um tom professoral.** Seja um assistente prestativo e informativo.
+                
+                **INSTRUÇÕES DE ESTILO E CITAÇÃO (FORMATO DE NOTAS DE RODAPÉ):**
+                * **Tom:** Prestativo, informativo e preciso. Organize a resposta em parágrafos lógicos.
+                * **Citação no Texto:** Ao apresentar uma informação **chave** extraída de uma fonte, adicione um **número sobrescrito** (superscript) no final da frase ou trecho, começando com ¹, depois ², ³ (ex: "A justificação é um ato da livre graça de Deus¹.").
+                * **Mapeamento:** O número sobrescrito (ex: ¹) DEVE CORRESPONDER ao número da fonte no bloco "FONTES DISPONÍVEIS" (ex: [1]).
+                * **Reutilização de Fontes:** Se você usar a mesma fonte (ex: [1]) várias vezes, **use o mesmo número sobrescrito** (ex: ¹) todas as vezes.
+                * **Seção "Fontes Consultadas":** Ao final da sua resposta principal, adicione uma seção `---` e depois `### Fontes Consultadas`. Nesta seção, liste **cada número sobrescrito** usado no texto, seguido pela **FONTE INTACTA (COMPLETA)**, que você deve extrair do "MAPA DE FONTES".
+                    * Exemplo de Rodapé:
+                        ```
+                        ---
+                        ### Fontes Consultadas
+                        ¹ Bíblia de Genebra - Romanos 8:29
+                        ² Teologia Sistemática - D. As Partes da Predestinação.
+                        ```
+                
+                **SE O CONTEXTO FOR INSUFICIENTE:**
+                * Se as fontes ([1], [2]...) não responderem **diretamente**, informe isso claramente. Diga: "As fontes consultadas não fornecem uma resposta direta sobre [tópico]." Se elas abordarem um tópico *relacionado*, mencione-o brevemente, **citando as fontes com números sobrescritos** e listando-as no rodapé.
+                
+                ---
+                FONTES DISPONÍVEIS PARA CONSULTA:
+                %s
+                ---
+                %s
+                ---
+                
+                **PERGUNTA DO USUÁRIOS:**
                 %s
                 
-                PERGUNTA DO USUÁRIO:
-                %s
-                
-                RESPOSTA ESTRUTURADA:
-                (Inicie com o fundamento bíblico, depois use as fontes confessionais para detalhar e sistematizar a explicação, e conclua de forma coesa.)
-                """, context.toString(), question);
+                **RESPOSTA:**
+                (Elabore sua resposta. Adicione números sobrescritos ¹, ², ³... após as informações chave. No final, crie a seção "Fontes Consultadas" listando cada número e sua FONTE INTACTA correspondente do "MAPA DE FONTES".)
+                """, context.toString(), sourceMapping.toString(), question);
     }
 
     private String limitContent(String content, int maxLength) {
