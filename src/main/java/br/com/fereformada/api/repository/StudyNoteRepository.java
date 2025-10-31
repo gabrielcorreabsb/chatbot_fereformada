@@ -22,6 +22,7 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
     @Query("SELECT COUNT(DISTINCT s.book) FROM StudyNote s WHERE s.source = ?1")
     long countDistinctBookBySource(String source);
 
+    // ===== BUSCA VETORIAL MODIFICADA =====
     @Query(nativeQuery = true, value = """
         SELECT
             id,
@@ -34,16 +35,25 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
             1 - (note_vector <=> CAST(:embedding AS vector)) AS similarity_score
         FROM
             study_notes
+        WHERE
+            -- Filtros dinâmicos (serão NULL se não usados)
+            (:livroBiblico IS NULL OR book = :livroBiblico)
+            AND (:capitulo IS NULL OR start_chapter = :capitulo)
+            -- Filtra versículo se fornecido
+            AND (:versiculo IS NULL OR 
+                 (:versiculo >= start_verse AND :versiculo <= end_verse))
         ORDER BY
             similarity_score DESC
         LIMIT :limit
     """)
     List<Object[]> findSimilarNotesRaw(
-            @Param("embedding") String embedding,  // <-- ADICIONE ISTO
-            @Param("limit") int limit             // <-- ADICIONE ISTO
+            @Param("embedding") String embedding,
+            @Param("limit") int limit,
+            @Param("livroBiblico") String livroBiblico, // NOVO
+            @Param("capitulo") Integer capitulo,       // NOVO
+            @Param("versiculo") Integer versiculo     // NOVO
     );
 
-    // ===== NOVO: FTS POSTGRESQL =====
     @Query(value = """
         SELECT 
             s.id, s.book, s.start_chapter, s.start_verse, s.end_chapter, s.end_verse, s.note_content,
@@ -52,13 +62,25 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
                 to_tsquery('portuguese', :tsquery)
             ) as fts_rank
         FROM study_notes s
-        WHERE to_tsvector('portuguese', s.note_content || ' ' || s.book)
-              @@ to_tsquery('portuguese', :tsquery)
+        WHERE 
+            (to_tsvector('portuguese', s.note_content || ' ' || s.book)
+              @@ to_tsquery('portuguese', :tsquery))
+            -- Filtros dinâmicos (serão NULL se não usados)
+            AND (:livroBiblico IS NULL OR book = :livroBiblico)
+            AND (:capitulo IS NULL OR start_chapter = :capitulo)
+            -- Filtra versículo se fornecido
+            AND (:versiculo IS NULL OR 
+                 (:versiculo >= start_verse AND :versiculo <= end_verse))
         ORDER BY fts_rank DESC
         LIMIT :limit
         """, nativeQuery = true)
-    List<Object[]> searchByKeywordsFTS(@Param("tsquery") String tsquery, @Param("limit") int limit);
-
+    List<Object[]> searchByKeywordsFTS(
+            @Param("tsquery") String tsquery,
+            @Param("limit") int limit,
+            @Param("livroBiblico") String livroBiblico, // NOVO
+            @Param("capitulo") Integer capitulo,       // NOVO
+            @Param("versiculo") Integer versiculo     // NOVO
+    );
     // ===== JPQL FALLBACK (mantido) =====
     @Query("""
         SELECT s FROM StudyNote s 

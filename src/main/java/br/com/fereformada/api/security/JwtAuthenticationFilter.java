@@ -1,5 +1,6 @@
 package br.com.fereformada.api.security;
 
+import io.jsonwebtoken.Claims; // Importar Claims
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -12,6 +13,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -30,21 +33,32 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String token = getTokenFromRequest(request);
 
             if (token != null) {
-                // Valida o token e pega o ID do usuário (que está no "subject" do token)
-                String userId = tokenProvider.getUserId(token);
+                // 1. Pega todos os "claims" de uma vez
+                Claims claims = tokenProvider.getClaims(token);
 
-                // Cria um objeto de autenticação do Spring Security
+                // 2. Extrai o ID do usuário (Subject)
+                String userId = claims.getSubject();
+
+                // 3. LÓGICA ATUALIZADA: Extrai as roles dos claims
+                List<String> roles = tokenProvider.getRoles(claims);
+
+                // 4. Converte as strings (ex: "ADMIN") para o formato do Spring (ex: "ROLE_ADMIN")
+                List<SimpleGrantedAuthority> authorities = roles.stream()
+                        .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
+                        .collect(Collectors.toList());
+
+                // 5. Cria o token de autenticação do Spring com as roles corretas
                 UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                        userId, // O "principal" agora é o ID do usuário (String)
+                        userId, // O "principal" é o ID do usuário
                         null,
-                        Collections.singletonList(new SimpleGrantedAuthority("ROLE_USER"))
+                        authorities // As permissões (ex: [ROLE_ADMIN, ROLE_USER])
                 );
 
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
         } catch (Exception ex) {
-            // Falha na autenticação (token inválido, expirado, etc.)
-            logger.error("Não foi possível autenticar o usuário", ex);
+            // Logar falha, mas não quebrar a requisição
+            logger.warn("Não foi possível autenticar o usuário: " + ex.getMessage());
         }
 
         filterChain.doFilter(request, response);

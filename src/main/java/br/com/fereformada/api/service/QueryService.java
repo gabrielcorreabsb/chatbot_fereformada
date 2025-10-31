@@ -10,6 +10,7 @@ import br.com.fereformada.api.repository.StudyNoteRepository;
 import br.com.fereformada.api.repository.WorkRepository;
 import br.com.fereformada.api.model.Mensagem;
 import br.com.fereformada.api.repository.MensagemRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pgvector.PGvector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +34,7 @@ public class QueryService {
     private final Map<String, PGvector> embeddingCache = new ConcurrentHashMap<>();
     private static final int MAX_CACHE_SIZE = 100;
     private static final int MAX_EMBEDDING_CACHE_SIZE = 500;
+
 
     // ===== STOP WORDS EM PORTUGUÊS =====
     private static final Set<String> STOP_WORDS = java.util.Set.of(
@@ -66,16 +68,20 @@ public class QueryService {
     private final WorkRepository workRepository;
     private final GeminiApiClient geminiApiClient;
     private final MensagemRepository mensagemRepository;
+    private final QueryAnalyzer queryAnalyzer;
+    private final ObjectMapper objectMapper;
 
     public QueryService(ContentChunkRepository contentChunkRepository,
                         StudyNoteRepository studyNoteRepository,
                         WorkRepository workRepository,
-                        GeminiApiClient geminiApiClient, MensagemRepository mensagemRepository) {
+                        GeminiApiClient geminiApiClient, MensagemRepository mensagemRepository, QueryAnalyzer queryAnalyzer, ObjectMapper objectMapper) {
         this.contentChunkRepository = contentChunkRepository;
         this.studyNoteRepository = studyNoteRepository;
         this.workRepository = workRepository;
         this.geminiApiClient = geminiApiClient;
         this.mensagemRepository = mensagemRepository;
+        this.queryAnalyzer = queryAnalyzer;
+        this.objectMapper = objectMapper;
     }
 
 
@@ -84,19 +90,17 @@ public class QueryService {
         String userQuestion = request.question();
         UUID chatId = request.chatId();
 
-        // --- 1. Verificação de Referência Direta ---
-        // 👇 TIPO DE RETORNO ATUALIZADO
+        // --- 1. Verificação de Referência Direta (FAST-PATH) ---
         Optional<QueryServiceResult> directResponse = handleDirectReferenceQuery(userQuestion);
         if (directResponse.isPresent()) {
-            logger.info("✅ Resposta gerada via busca direta por referência.");
+            logger.info("✅ Resposta gerada via busca direta por referência (Regex).");
             return directResponse.get();
         }
 
-        logger.info("Nova pergunta recebida (busca híbrida): '{}' (ChatID: {})", userQuestion, chatId);
+        logger.info("Nova pergunta recebida: '{}' (ChatID: {})", userQuestion, chatId);
 
         // --- 2. Verificação de Cache ---
         String cacheKey = normalizeQuestion(userQuestion);
-        // 👇 TIPO DE RETORNO ATUALIZADO
         if (responseCache.containsKey(cacheKey)) {
             logger.info("✅ Cache hit para: '{}'", userQuestion);
             return responseCache.get(cacheKey);
@@ -109,8 +113,18 @@ public class QueryService {
             logger.info("Carregado {} mensagens do histórico do chat {}", chatHistory.size(), chatId);
         }
 
-        // --- 4. LÓGICA DE RAG CONVERSACIONAL ---
+        // --- 4. NOVO: Análise da Pergunta (SLOW-PATH) ---
+        MetadataFilter filter = queryAnalyzer.extractFilters(userQuestion, chatHistory);
+        if (!filter.isEmpty()) {
+            logger.info("🧠 Filtros de metadados extraídos via LLM: {}", filter);
+        } else {
+            logger.info("Buscando por (busca semântica pura): '{}'", userQuestion);
+        }
+
+        // --- 5. LÓGICA DE RAG CONVERSACIONAL (Mantido e Corrigido) ---
+        // Define a query base. 'ragQuery' será a string usada para a busca semântica.
         String ragQuery = userQuestion;
+
         Optional<Integer> sourceNum = extractSourceNumberFromQuestion(userQuestion);
         if (sourceNum.isPresent()) {
             logger.info("Detectada pergunta de acompanhamento para a fonte número {}", sourceNum.get());
@@ -120,23 +134,27 @@ public class QueryService {
                 String sourceName = extractedSource.get();
                 logger.info("Fonte extraída do histórico: '{}'", sourceName);
 
-                // 👇 TIPO DE RETORNO ATUALIZADO
+                // Tenta a busca direta (regex) com a fonte extraída (ex: "CFW 1.1")
                 Optional<QueryServiceResult> directFollowUp = handleDirectReferenceQuery(sourceName);
                 if (directFollowUp.isPresent()) {
                     logger.info("Respondendo ao acompanhamento com busca de referência direta.");
                     return directFollowUp.get();
                 } else {
+                    // Se falhar, usa o nome da fonte como a query RAG
                     logger.warn("Busca direta falhou para '{}', usando busca RAG padrão.", sourceName);
-                    ragQuery = sourceName;
+                    ragQuery = sourceName; // Sobrescreve a query semântica
                 }
             } else {
                 logger.warn("Não foi possível extrair o nome da fonte {} do histórico.", sourceNum.get());
             }
         }
+        // Ao final, 'ragQuery' é ou a 'userQuestion' ou o nome da fonte extraída.
 
-        // --- 5. Busca Híbrida (RAG) ---
-        List<ContextItem> results = performHybridSearch(ragQuery);
+        // --- 6. Busca Híbrida (RAG) (MODIFICADA) ---
+        // Passamos o 'ragQuery' (para busca semântica) e o 'filter' (para busca estrutural)
+        List<ContextItem> results = performHybridSearch(ragQuery, filter);
 
+        // --- 7. Verificação de Resultados ---
         if (results.isEmpty()) {
             // 👇 TIPO DE RETORNO ATUALIZADO
             return new QueryServiceResult(
@@ -146,15 +164,29 @@ public class QueryService {
             );
         }
 
-        // --- 6. Log de Qualidade ---
-        // ... (seu código de log de avgScore) ...
+        // --- 8. Log de Qualidade ---
 
-        // --- 7. Construção do Prompt e Chamada da IA ---
+        double avgScore = results.stream()
+                .mapToDouble(ContextItem::similarityScore)
+                .average()
+                .orElse(0.0);
+
+        if (avgScore < 0.6) {
+            logger.warn("⚠️ Baixa relevância média ({}) para: '{}' (Query RAG: '{}')",
+                    String.format("%.2f", avgScore), userQuestion, ragQuery);
+        }
+
+        logger.info("📊 Construindo resposta com {} fontes (relevância média: {})",
+                results.size(), String.format("%.2f", avgScore));
+
+        // --- 9. Construção do Prompt e Chamada da IA ---
         String prompt = buildOptimizedPrompt(userQuestion, results, chatHistory);
         String aiAnswer;
         try {
             aiAnswer = geminiApiClient.generateContent(prompt, chatHistory, userQuestion);
-            if (aiAnswer == null || aiAnswer.trim().isEmpty()) { /* ... */ }
+            if (aiAnswer == null || aiAnswer.trim().isEmpty()) {
+                aiAnswer = "Desculpe, não consegui gerar uma resposta. Tente novamente.";
+            }
         } catch (Exception e) {
             logger.error("❌ Erro ao chamar a API do Gemini para a pergunta: '{}'. Erro: {}", userQuestion, e.getMessage(), e);
             aiAnswer = "Desculpe, ocorreu um erro ao tentar processar sua pergunta com a IA. Por favor, tente novamente mais tarde.";
@@ -162,7 +194,7 @@ public class QueryService {
             return new QueryServiceResult(aiAnswer, Collections.emptyList());
         }
 
-        // --- 8. NOVO: PÓS-PROCESSAMENTO PARA CRIAR REFERÊNCIAS ---
+        // --- 10. PÓS-PROCESSAMENTO PARA CRIAR REFERÊNCIAS ---
         List<SourceReference> references = new ArrayList<>();
         Map<String, Integer> sourceToNumberMap = new HashMap<>();
         int sourceCounter = 1;
@@ -183,7 +215,7 @@ public class QueryService {
             ));
         }
 
-        // --- 9. Resposta e Cache ---
+        // --- 11. Resposta e Cache ---
         // 👇 TIPO DE RETORNO ATUALIZADO
         QueryServiceResult response = new QueryServiceResult(aiAnswer, references);
 
@@ -593,7 +625,7 @@ public class QueryService {
     }
 
     // ===== BUSCA VETORIAL OTIMIZADA =====
-    private List<ContextItem> performVectorSearch(String userQuestion) {
+    private List<ContextItem> performVectorSearch(String userQuestion, MetadataFilter filter) {
         // Usar cache de embeddings
         PGvector questionVector = getOrComputeEmbedding(userQuestion);
 
@@ -603,13 +635,23 @@ public class QueryService {
         }
 
         // Buscar mais resultados inicialmente para melhor reranking
+        // APLICANDO FILTROS:
         List<Object[]> rawChunkResults = contentChunkRepository.findSimilarChunksRaw(
-                questionVector.toString(), 5
+                questionVector.toString(),
+                5,
+                filter.obraAcronimo(),      // NOVO (pode ser null)
+                filter.capitulo(),        // NOVO (pode ser null)
+                filter.secaoOuVersiculo() // NOVO (pode ser null)
         );
         List<ContextItem> chunkItems = convertRawChunkResultsToContextItems(rawChunkResults);
 
+        // APLICANDO FILTROS:
         List<Object[]> rawNoteResults = studyNoteRepository.findSimilarNotesRaw(
-                questionVector.toString(), 5
+                questionVector.toString(),
+                5,
+                filter.livroBiblico(),    // NOVO (pode ser null)
+                filter.capitulo(),        // NOVO (pode ser null)
+                filter.secaoOuVersiculo() // NOVO (pode ser null)
         );
         List<ContextItem> noteItems = convertRawNoteResultsToContextItems(rawNoteResults);
 
@@ -899,12 +941,12 @@ public class QueryService {
     }
 
     // ===== NOVO: HYBRID SEARCH COM FTS =====
-    private List<ContextItem> performHybridSearch(String userQuestion) {
-        // 1. Busca vetorial (peso 60%)
-        List<ContextItem> vectorResults = performVectorSearch(userQuestion);
+    private List<ContextItem> performHybridSearch(String userQuestion, MetadataFilter filter) {
+        // 1. Busca vetorial (peso 60%) - AGORA PASSA O FILTRO
+        List<ContextItem> vectorResults = performVectorSearch(userQuestion, filter);
 
-        // 2. Busca FTS (peso 40%)
-        List<ContextItem> ftsResults = performKeywordSearchFTS(userQuestion);
+        // 2. Busca FTS (peso 40%) - AGORA PASSA O FILTRO
+        List<ContextItem> ftsResults = performKeywordSearchFTS(userQuestion, filter);
 
         // 3. ✅ DESABILITAR JPQL (está com erro PostgreSQL)
         List<ContextItem> jpqlResults = Collections.emptyList();
@@ -1216,7 +1258,7 @@ public class QueryService {
         logger.info("  {} Qualidade média: {}%", qualityEmoji, String.format("%.1f", avgScore * 100));
     }
 
-    private List<ContextItem> performKeywordSearchFTS(String question) {
+    private List<ContextItem> performKeywordSearchFTS(String question, MetadataFilter filter) {
         Set<String> keywords = extractImportantKeywords(question);
 
         if (keywords.isEmpty()) {
@@ -1234,11 +1276,23 @@ public class QueryService {
         List<ContextItem> results = new ArrayList<>();
 
         try {
-            logger.debug("🔍 Executando FTS com query: '{}'", tsquery);
+            logger.debug("🔍 Executando FTS com query: '{}' E FILTRO: {}", tsquery, filter);
 
-            // Buscar com FTS
-            List<Object[]> chunkResults = contentChunkRepository.searchByKeywordsFTS(tsquery, 5);
-            List<Object[]> noteResults = studyNoteRepository.searchByKeywordsFTS(tsquery, 5);
+            // Buscar com FTS - APLICANDO FILTROS
+            List<Object[]> chunkResults = contentChunkRepository.searchByKeywordsFTS(
+                    tsquery,
+                    5,
+                    filter.obraAcronimo(),      // NOVO
+                    filter.capitulo(),        // NOVO
+                    filter.secaoOuVersiculo() // NOVO
+            );
+            List<Object[]> noteResults = studyNoteRepository.searchByKeywordsFTS(
+                    tsquery,
+                    5,
+                    filter.livroBiblico(),    // NOVO
+                    filter.capitulo(),        // NOVO
+                    filter.secaoOuVersiculo() // NOVO
+            );
 
             logger.debug("  📄 FTS Chunks encontrados: {}", chunkResults.size());
             logger.debug("  📖 FTS Notes encontradas: {}", noteResults.size());
@@ -1249,17 +1303,29 @@ public class QueryService {
 
             logger.debug("✅ FTS encontrou {} resultados únicos", results.size());
 
-            // ✅ Se não encontrou nada, tentar termo principal
+            // ✅ Se não encontrou nada, tentar termo principal - APLICANDO FILTROS
             if (results.isEmpty() && !keywords.isEmpty()) {
                 String mainTerm = keywords.stream()
                         .filter(k -> k.length() > 4)
                         .findFirst()
                         .orElse(keywords.iterator().next());
 
-                logger.info("🔄 Tentando FTS com termo principal: '{}'", mainTerm);
+                logger.info("🔄 Tentando FTS com termo principal: '{}' E FILTRO: {}", mainTerm, filter);
 
-                List<Object[]> fallbackChunks = contentChunkRepository.searchByKeywordsFTS(mainTerm, 3);
-                List<Object[]> fallbackNotes = studyNoteRepository.searchByKeywordsFTS(mainTerm, 3);
+                List<Object[]> fallbackChunks = contentChunkRepository.searchByKeywordsFTS(
+                        mainTerm,
+                        3,
+                        filter.obraAcronimo(),      // NOVO
+                        filter.capitulo(),        // NOVO
+                        filter.secaoOuVersiculo() // NOVO
+                );
+                List<Object[]> fallbackNotes = studyNoteRepository.searchByKeywordsFTS(
+                        mainTerm,
+                        3,
+                        filter.livroBiblico(),    // NOVO
+                        filter.capitulo(),        // NOVO
+                        filter.secaoOuVersiculo() // NOVO
+                );
 
                 results.addAll(convertFTSChunkResults(fallbackChunks, keywords));
                 results.addAll(convertFTSNoteResults(fallbackNotes, keywords));
@@ -1337,91 +1403,133 @@ public class QueryService {
     }
 
     private Optional<QueryServiceResult> handleDirectReferenceQuery(String userQuestion) {
+        // Padrão 1: Confissões - VERSÃO MELHORADA E FLEXÍVEL
+        Pattern confessionalPattern = Pattern.compile(
+                // Grupo 1: Nome completo ou acrônimo
+                "\\b(?:(CFW|Confiss.o(?: de F.)? de Westminster)|" +
+                        "(CM|Catecismo Maior(?: de Westminster)?)|" +
+                        "(BC|Breve Catecismo(?: de Westminster)?)|" +
+                        "(TSB|Teologia Sistem.tica)|" +
+                        "(ICR|Institutas))\\b" +
 
-        // Padrão 1: Confissões (CFW 1.1, CM 98, TSB...)
-        Pattern confessionalPattern = Pattern.compile("\\b(CFW|CM|BC|TSB)\\s*(\\d+)(?:[:.](\\d+))?\\b", Pattern.CASE_INSENSITIVE);
+                        // Separador opcional (vírgula, espaço, "pergunta", "capítulo")
+                        "[\\s,]*" +
+                        "(?:pergunta|capitulo|cap\\.?|p\\.?\\s*)?" +
+
+                        // Grupo 2: Número do capítulo ou pergunta
+                        "(\\d+)" +
+
+                        // Grupo 3: Número da seção (opcional)
+                        "(?:[:.](\\d+))?",
+                Pattern.CASE_INSENSITIVE
+        );
         Matcher confessionalMatcher = confessionalPattern.matcher(userQuestion);
 
-        // Padrão 2: Bíblia (BG Romanos 8:29, 1 Coríntios 2:8, etc.)
-        // Regex corrigido para ser "ganancioso" (greedy) e capturar nomes completos
+        // Padrão 2: Bíblia (seu padrão bíblico está bom, mantemos igual)
         Pattern biblicalPattern = Pattern.compile(
-                "\\b(BG|Bíblia de Genebra)?[ -]*(\\d*\\s*[A-Za-z ]+)\\s*(\\d+)[:.](\\d+(?:-\\d+)?)",
+                "(?:\\b(BG|Bíblia de Genebra)\\s*-?\\s*)?" +
+                        "((?:\\d+\\s+)?[A-Za-zÀ-ÿ]+(?:\\s+[A-Za-zÀ-ÿ]+)*)" +
+                        "\\s+" +
+                        "(\\d+)" +
+                        "[:.](\\d+(?:-\\d+)?)",
                 Pattern.CASE_INSENSITIVE
         );
         Matcher biblicalMatcher = biblicalPattern.matcher(userQuestion);
 
-        // --- LÓGICA DO BLOCO 1: Busca Confessional ---
+        // --- BLOCO 1: Busca Confessional (LÓGICA ATUALIZADA) ---
         if (confessionalMatcher.find()) {
-            String acronym = confessionalMatcher.group(1);
-            int chapterOrQuestion = Integer.parseInt(confessionalMatcher.group(2));
-            Integer section = confessionalMatcher.group(3) != null ? Integer.parseInt(confessionalMatcher.group(3)) : null;
+            // Mapear o que foi encontrado para o acrônimo correto
+            String acronym = null;
+            if (confessionalMatcher.group(1) != null) acronym = "CFW";
+            else if (confessionalMatcher.group(2) != null) acronym = "CM";
+            else if (confessionalMatcher.group(3) != null) acronym = "BC";
+            else if (confessionalMatcher.group(4) != null) acronym = "TSB";
+            else if (confessionalMatcher.group(5) != null) acronym = "ICR";
+
+            if (acronym == null) return Optional.empty(); // Segurança
+
+            int chapterOrQuestion = Integer.parseInt(confessionalMatcher.group(6)); // O grupo do número mudou!
+            Integer section = confessionalMatcher.group(7) != null ?
+                    Integer.parseInt(confessionalMatcher.group(7)) : null;
 
             logger.info("🔍 Referência direta CONFESSIONAL detectada: {} {}{}",
-                    acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""));
+                    acronym.toUpperCase(), chapterOrQuestion,
+                    (section != null ? "." + section : ""));
 
-            List<ContentChunk> results = contentChunkRepository.findDirectReference(acronym, chapterOrQuestion, section);
+            // O resto da sua lógica aqui está perfeito e não precisa mudar.
+            List<ContentChunk> results = contentChunkRepository.findDirectReference(
+                    acronym, chapterOrQuestion, section
+            );
 
             if (results.isEmpty()) {
                 logger.warn("⚠️ Referência confessional {} não encontrada.", acronym.toUpperCase());
-                return Optional.empty(); // Deixa a busca híbrida continuar
+                return Optional.empty();
             }
 
             ContentChunk directHit = results.get(0);
-            ContextItem context = ContextItem.from(directHit, 1.0); // Score máximo
+            ContextItem context = ContextItem.from(directHit, 1.0);
 
-            // Prompt específico para documentos confessionais
             String focusedPrompt = String.format("""
-                        Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
-                        Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
-                        
-                        DOCUMENTO: %s
-                        REFERÊNCIA: %s %d%s
-                        TEXTO ENCONTRADO:
-                        "%s"
-                        
-                        INSTRUÇÕES:
-                        1.  Comece confirmando a referência (Ex: "A Confissão de Fé de Westminster, no capítulo %d, parágrafo %d, afirma que...").
-                        2.  Explique o significado teológico do texto em suas próprias palavras.
-                        3.  Seja direto e focado exclusivamente no texto fornecido.
-                        
-                        EXPLICAÇÃO:
-                        """,
+            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
+            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
+            
+            DOCUMENTO: %s
+            REFERÊNCIA: %s %d%s
+            TEXTO ENCONTRADO:
+            "%s"
+            
+            INSTRUÇÕES:
+            1.  Comece confirmando a referência (Ex: "A pergunta %d do Catecismo Maior de Westminster diz...").
+            2.  Explique o significado teológico do texto em suas próprias palavras.
+            3.  Seja direto e focado exclusivamente no texto fornecido.
+            
+            EXPLICAÇÃO:
+            """,
                     directHit.getWork().getTitle(),
                     acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""),
                     directHit.getContent(),
                     chapterOrQuestion, (section != null ? section : 1)
             );
 
-            // CORREÇÃO: Chama a API com 3 argumentos
-            String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
+            String aiAnswer = geminiApiClient.generateContent(
+                    focusedPrompt, Collections.emptyList(), userQuestion
+            );
 
-            // CORREÇÃO: Retorna o novo DTO 'QueryServiceResult'
             SourceReference ref = new SourceReference(1, context.source(), context.content());
             QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
             return Optional.of(response);
         }
 
-        // --- LÓGICA DO BLOCO 2: Busca Bíblica ---
+        // --- BLOCO 2: Busca Bíblica (CORRIGIDO) ---
         else if (biblicalMatcher.find()) {
 
-            String book = biblicalMatcher.group(2).trim(); // ex: "Romanos" ou "1 Coríntios"
-            int chapter = Integer.parseInt(biblicalMatcher.group(3)); // ex: 8
-            int verse = Integer.parseInt(biblicalMatcher.group(4).split("-")[0]); // Pega o primeiro versículo
+            // 👇 EXTRAÇÃO CORRIGIDA DOS GRUPOS
+            String book = biblicalMatcher.group(2).trim();      // Nome do livro
+            int chapter = Integer.parseInt(biblicalMatcher.group(3));  // Capítulo
+            String verseGroup = biblicalMatcher.group(4);       // Versículo(s)
+            int verse = Integer.parseInt(verseGroup.split("-")[0]); // Primeiro versículo
 
             logger.info("🔍 Referência direta BÍBLICA detectada: {} {}:{}", book, chapter, verse);
 
-            List<StudyNote> results = studyNoteRepository.findByBiblicalReference(book, chapter, verse);
+            // 🔧 NORMALIZAR NOME DO LIVRO (remover números duplicados)
+            book = normalizeBookName(book);
+
+            logger.info("📖 Livro normalizado: '{}'", book);
+
+            List<StudyNote> results = studyNoteRepository.findByBiblicalReference(
+                    book, chapter, verse
+            );
 
             if (results.isEmpty()) {
-                logger.warn("⚠️ Referência bíblica direta {}:{}:{} não encontrada.", book, chapter, verse);
-                return Optional.empty(); // Deixa a busca híbrida continuar
+                logger.warn("⚠️ Referência bíblica direta {}:{}:{} não encontrada.",
+                        book, chapter, verse);
+                return Optional.empty();
             }
 
             StudyNote directHit = results.get(0);
             ContextItem context = ContextItem.from(directHit, 1.0);
 
-            // Prompt específico para notas de estudo bíblicas
             String focusedPrompt = String.format("""
             Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a uma nota de estudo bíblica.
             Sua tarefa é explicar o texto da nota de estudo fornecida de forma clara e objetiva.
@@ -1441,20 +1549,39 @@ public class QueryService {
                     context.source(),
                     book, chapter, verse,
                     directHit.getNoteContent(),
-                    book, chapter, verse // Para a INSTRUÇÃO 1
+                    book, chapter, verse
             );
 
-            // CORREÇÃO: Chama a API com 3 argumentos
-            String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
+            String aiAnswer = geminiApiClient.generateContent(
+                    focusedPrompt, Collections.emptyList(), userQuestion
+            );
 
-            // CORREÇÃO: Retorna o novo DTO 'QueryServiceResult'
             SourceReference ref = new SourceReference(1, context.source(), context.content());
             QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
             return Optional.of(response);
         }
 
-        return Optional.empty(); // Nenhuma referência direta encontrada
+        return Optional.empty();
+    }
+
+    private String normalizeBookName(String rawBookName) {
+        if (rawBookName == null || rawBookName.isEmpty()) {
+            return rawBookName;
+        }
+
+        // 1. Remover espaços extras
+        String normalized = rawBookName.trim().replaceAll("\\s+", " ");
+
+        // 2. Remover números duplicados no início (ex: "1 1 Coríntios" -> "1 Coríntios")
+        normalized = normalized.replaceAll("^(\\d+)\\s+\\1\\s+", "$1 ");
+
+        // 3. Corrigir casos onde o número foi separado (ex: "1Coríntios" -> "1 Coríntios")
+        normalized = normalized.replaceAll("^(\\d+)([A-Za-zÀ-ÿ])", "$1 $2");
+
+        logger.debug("📝 Normalização: '{}' -> '{}'", rawBookName, normalized);
+
+        return normalized;
     }
 
     private Optional<Integer> extractSourceNumberFromQuestion(String userQuestion) {

@@ -2,8 +2,10 @@ package br.com.fereformada.api.repository;
 
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -24,18 +26,26 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
                     1 - (c.content_vector <=> CAST(:embedding AS vector)) AS similarity_score
                 FROM
                     content_chunks c
+                JOIN works w ON c.work_id = w.id -- JOIN para filtrar por acrônimo
                 WHERE
                     c.content_vector IS NOT NULL
+                    -- Filtros dinâmicos (serão NULL se não usados)
+                    AND (:obraAcronimo IS NULL OR LOWER(w.acronym) = LOWER(:obraAcronimo))
+                    AND (:capitulo IS NULL OR c.chapter_number = :capitulo)
+                    AND (:secao IS NULL OR c.section_number = :secao)
                 ORDER BY
                     similarity_score DESC
                 LIMIT :limit
             """)
     List<Object[]> findSimilarChunksRaw(
-            @Param("embedding") String embedding,  // <-- ADICIONE ISTO
-            @Param("limit") int limit             // <-- ADICIONE ISTO
+            @Param("embedding") String embedding,
+            @Param("limit") int limit,
+            @Param("obraAcronimo") String obraAcronimo, // NOVO
+            @Param("capitulo") Integer capitulo,       // NOVO
+            @Param("secao") Integer secao             // NOVO
     );
 
-    // ===== NOVO: FTS POSTGRESQL =====
+    // ===== FTS MODIFICADO =====
     @Query(value = """
             SELECT 
                 c.id, c.content, c.question, c.section_title, c.chapter_title,
@@ -45,12 +55,24 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
                     to_tsquery('portuguese', :tsquery)
                 ) as fts_rank
             FROM content_chunks c
-            WHERE to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, ''))
-                  @@ to_tsquery('portuguese', :tsquery)
+            JOIN works w ON c.work_id = w.id -- JOIN para filtrar por acrônimo
+            WHERE 
+                (to_tsvector('portuguese', c.content || ' ' || COALESCE(c.question, '') || ' ' || COALESCE(c.chapter_title, ''))
+                   @@ to_tsquery('portuguese', :tsquery))
+                -- Filtros dinâmicos (serão NULL se não usados)
+                AND (:obraAcronimo IS NULL OR LOWER(w.acronym) = LOWER(:obraAcronimo))
+                AND (:capitulo IS NULL OR c.chapter_number = :capitulo)
+                AND (:secao IS NULL OR c.section_number = :secao)
             ORDER BY fts_rank DESC
             LIMIT :limit
             """, nativeQuery = true)
-    List<Object[]> searchByKeywordsFTS(@Param("tsquery") String tsquery, @Param("limit") int limit);
+    List<Object[]> searchByKeywordsFTS(
+            @Param("tsquery") String tsquery,
+            @Param("limit") int limit,
+            @Param("obraAcronimo") String obraAcronimo, // NOVO
+            @Param("capitulo") Integer capitulo,       // NOVO
+            @Param("secao") Integer secao             // NOVO
+    );
 
     // ===== JPQL FALLBACK (mantido) =====
     @Query("""
@@ -92,10 +114,35 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
 
     @Query("SELECT c FROM ContentChunk c JOIN c.work w WHERE " +
             "LOWER(w.acronym) = LOWER(:acronym) AND " +
-            "c.chapterNumber = :chapterOrQuestion AND " +
-            "(:section IS NULL OR c.sectionNumber = :section)")
+
+            // NOVA LÓGICA DE CAPÍTULO:
+            // Se o parâmetro :chapter for NULL, nós EXIGIMOS que c.chapterNumber SEJA NULL.
+            // Se o parâmetro :chapter NÃO for NULL, nós EXIGIMOS que c.chapterNumber seja IGUAL a ele.
+            "((:chapter IS NULL AND c.chapterNumber IS NULL) OR (c.chapterNumber = :chapter)) AND " +
+
+            // NOVA LÓGICA DE SEÇÃO:
+            // Mesma lógica para a seção.
+            "((:section IS NULL AND c.sectionNumber IS NULL) OR (c.sectionNumber = :section))")
     List<ContentChunk> findDirectReference(
             @Param("acronym") String acronym,
-            @Param("chapterOrQuestion") int chapterOrQuestion,
+            @Param("chapter") Integer chapter,      // Deve ser Integer (wrapper)
             @Param("section") Integer section);
+
+    /**
+     * Encontra uma página de Chunks pertencentes a uma Obra (Work) específica.
+     * O Spring Data JPA cria a query automaticamente a partir do nome do método.
+     */
+    Page<ContentChunk> findByWorkId(Long workId, Pageable pageable);
+
+    /**
+     * Deleta todos os Chunks associados a um workId.
+     * Usamos @Modifying e @Query para uma deleção em massa eficiente.
+     * AVISO: Isso NÃO limpará a tabela 'chunk_topics'.
+     * Para isso, a lógica em deleteWork no serviço precisaria ser mais complexa
+     * (buscar chunks, limpar 'topics', salvar, e então deletar).
+     * Por enquanto, isso corresponde ao seu código.
+     */
+    @Modifying
+    @Query("DELETE FROM ContentChunk c WHERE c.work.id = :workId")
+    void deleteByWorkId(@Param("workId") Long workId);
 }

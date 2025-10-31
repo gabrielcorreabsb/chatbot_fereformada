@@ -4,6 +4,7 @@ import br.com.fereformada.api.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -12,6 +13,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
@@ -29,6 +31,9 @@ public class SecurityConfig {
                 // Habilita o CORS no nível do Spring Security
                 .cors(Customizer.withDefaults())
 
+                // Adiciona o seu filtro JWT antes do filtro padrão do Spring
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+
                 // Define a política de sessão como STATELESS (sem sessão no servidor)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
@@ -36,6 +41,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(authz -> authz
                         //.requestMatchers("/api/public/**").permitAll() // Exemplo de rotas públicas
                         .requestMatchers("/api/v1/**").authenticated() // Protege sua API v1
+                        // Exige autenticação para todos os endpoints de admin
+                        .requestMatchers("/api/admin/**").authenticated()
                         .anyRequest().permitAll() // Permite todo o resto (ajuste conforme necessário)
                 )
 
