@@ -1,5 +1,6 @@
 package br.com.fereformada.api.model;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -23,5 +24,6 @@ public class Topic {
     private String description;
 
     @ManyToMany(mappedBy = "topics")
+    @JsonBackReference
     private Set<ContentChunk> contentChunks;
 }

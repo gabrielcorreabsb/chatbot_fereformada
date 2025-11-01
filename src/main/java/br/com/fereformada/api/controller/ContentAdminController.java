@@ -1,10 +1,9 @@
 package br.com.fereformada.api.controller;
 
-import br.com.fereformada.api.dto.ChunkRequestDTO;
-import br.com.fereformada.api.dto.WorkDTO;
-import br.com.fereformada.api.model.ContentChunk;
-import br.com.fereformada.api.model.Work;
-import br.com.fereformada.api.service.ContentAdminService;
+import br.com.fereformada.api.dto.*;
+import br.com.fereformada.api.model.Author;
+import br.com.fereformada.api.model.Topic;
+import br.com.fereformada.api.service.ContentAdminService; // Removido Repos
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
@@ -12,78 +11,155 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/admin")
-// Protege TODOS os endpoints nesta classe.
-// O usuário DEVE ter OU 'ROLE_ADMIN' OU 'ROLE_MODERATOR'.
-// Um 'ROLE_USER' normal receberá 403 Forbidden.
 @PreAuthorize("hasAnyRole('ADMIN', 'MODERATOR')")
 public class ContentAdminController {
 
     private final ContentAdminService adminService;
+    // Removemos os repositórios, o Serviço agora lida com tudo
 
     public ContentAdminController(ContentAdminService adminService) {
         this.adminService = adminService;
     }
 
     // === Endpoints de Obras (Works) ===
-    // (Apenas ADMINS podem gerenciar obras)
 
     @GetMapping("/works")
-    public ResponseEntity<Page<Work>> getAllWorks(Pageable pageable) {
-        // Moderadores e Admins podem listar
+    public ResponseEntity<Page<WorkResponseDTO>> getAllWorks(Pageable pageable) {
         return ResponseEntity.ok(adminService.findAllWorks(pageable));
     }
 
+    // ======================================================
+    // ESTE É UM DOS MÉTODOS QUE ESTAVA FALTANDO (PROVAVELMENTE)
+    // ======================================================
+    @GetMapping("/works/{workId}")
+    public ResponseEntity<WorkResponseDTO> getWorkById(@PathVariable Long workId) {
+        // Você precisará adicionar o método 'findWorkById' ao seu AdminService
+        // Por agora, vamos assumir que o React só precisa do 'findAllWorks'
+        // Mas se o 'ChunkManagement' busca o 'work', ele precisa disso.
+        // Vamos adicionar o 'findWorkById' ao serviço.
+        return ResponseEntity.ok(adminService.findWorkById(workId));
+    }
+
     @PostMapping("/works")
-    @PreAuthorize("hasRole('ADMIN')") // Sobrescreve: SÓ ADMIN
-    public ResponseEntity<Work> createWork(@RequestBody WorkDTO workDto) {
-        Work createdWork = adminService.createWork(workDto);
-        return ResponseEntity.created(URI.create("/api/admin/works/" + createdWork.getId())).body(createdWork);
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<WorkResponseDTO> createWork(@RequestBody WorkDTO workDto) {
+        WorkResponseDTO createdWork = adminService.createWork(workDto);
+        return ResponseEntity.created(URI.create("/api/admin/works/" + createdWork.id())).body(createdWork);
     }
 
     @PutMapping("/works/{workId}")
-    @PreAuthorize("hasRole('ADMIN')") // Sobrescreve: SÓ ADMIN
-    public ResponseEntity<Work> updateWork(@PathVariable Long workId, @RequestBody WorkDTO workDto) {
-        Work updatedWork = adminService.updateWork(workId, workDto);
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<WorkResponseDTO> updateWork(@PathVariable Long workId, @RequestBody WorkDTO workDto) {
+        WorkResponseDTO updatedWork = adminService.updateWork(workId, workDto);
         return ResponseEntity.ok(updatedWork);
     }
 
     @DeleteMapping("/works/{workId}")
-    @PreAuthorize("hasRole('ADMIN')") // Sobrescreve: SÓ ADMIN
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> deleteWork(@PathVariable Long workId) {
         adminService.deleteWork(workId);
         return ResponseEntity.noContent().build();
     }
 
     // === Endpoints de Conteúdo (Chunks) ===
-    // (Admins e Moderadores podem gerenciar chunks)
 
+    // ======================================================
+    // ESTE É O MÉTODO QUE ESTAVA FALTANDO (PROVAVELMENTE)
+    // ======================================================
     @GetMapping("/works/{workId}/chunks")
-    public ResponseEntity<Page<ContentChunk>> getChunksForWork(@PathVariable Long workId, Pageable pageable) {
-        // Moderadores e Admins podem ler
+    public ResponseEntity<Page<ChunkResponseDTO>> getChunksForWork(@PathVariable Long workId, Pageable pageable) {
         return ResponseEntity.ok(adminService.findChunksByWork(workId, pageable));
     }
 
     @PostMapping("/works/{workId}/chunks")
-    public ResponseEntity<ContentChunk> createChunk(@PathVariable Long workId, @RequestBody ChunkRequestDTO chunkDto) {
-        // Moderadores e Admins podem criar chunks
-        ContentChunk createdChunk = adminService.createChunk(workId, chunkDto);
+    public ResponseEntity<ChunkResponseDTO> createChunk(@PathVariable Long workId, @RequestBody ChunkRequestDTO chunkDto) {
+        ChunkResponseDTO createdChunk = adminService.createChunk(workId, chunkDto);
         return ResponseEntity.created(URI.create("/api/admin/chunks/" + createdChunk.getId())).body(createdChunk);
     }
 
     @PutMapping("/chunks/{chunkId}")
-    public ResponseEntity<ContentChunk> updateChunk(@PathVariable Long chunkId, @RequestBody ChunkRequestDTO chunkDto) {
-        // Moderadores e Admins podem atualizar (ex: corrigir typos)
-        ContentChunk updatedChunk = adminService.updateChunk(chunkId, chunkDto);
+    public ResponseEntity<ChunkResponseDTO> updateChunk(@PathVariable Long chunkId, @RequestBody ChunkRequestDTO chunkDto) {
+        ChunkResponseDTO updatedChunk = adminService.updateChunk(chunkId, chunkDto);
         return ResponseEntity.ok(updatedChunk);
     }
 
     @DeleteMapping("/chunks/{chunkId}")
-    @PreAuthorize("hasRole('ADMIN')") // Sobrescreve: SÓ ADMIN
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> deleteChunk(@PathVariable Long chunkId) {
         adminService.deleteChunk(chunkId);
+        return ResponseEntity.noContent().build();
+    }
+
+    // === Endpoints de Autores (Authors) ===
+
+    @GetMapping("/authors")
+    public ResponseEntity<Page<AuthorDTO>> getAllAuthors(Pageable pageable) {
+        return ResponseEntity.ok(adminService.findAllAuthors(pageable));
+    }
+
+    @GetMapping("/authors/all")
+    public ResponseEntity<List<AuthorDTO>> getAllAuthorsList() {
+        List<AuthorDTO> authors = adminService.findAllAuthorsList();
+        return ResponseEntity.ok(authors);
+    }
+
+    @PostMapping("/authors")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<AuthorDTO> createAuthor(@RequestBody AuthorDTO authorDto) {
+        AuthorDTO createdAuthor = adminService.createAuthor(authorDto);
+        return ResponseEntity.created(URI.create("/api/admin/authors/" + createdAuthor.id())).body(createdAuthor);
+    }
+
+    @PutMapping("/authors/{authorId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<AuthorDTO> updateAuthor(@PathVariable Long authorId, @RequestBody AuthorDTO authorDto) {
+        AuthorDTO updatedAuthor = adminService.updateAuthor(authorId, authorDto);
+        return ResponseEntity.ok(updatedAuthor);
+    }
+
+    @DeleteMapping("/authors/{authorId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Void> deleteAuthor(@PathVariable Long authorId) {
+        adminService.deleteAuthor(authorId);
+        return ResponseEntity.noContent().build();
+    }
+
+    // === Endpoints de Tópicos (Topics) ===
+
+    @GetMapping("/topics")
+    public ResponseEntity<Page<TopicDTO>> getAllTopics(Pageable pageable) {
+        return ResponseEntity.ok(adminService.findAllTopics(pageable));
+    }
+
+    @GetMapping("/topics/all")
+    public ResponseEntity<List<TopicDTO>> getAllTopicsList() {
+        List<TopicDTO> topics = adminService.findAllTopicsList();
+        return ResponseEntity.ok(topics);
+    }
+
+    @PostMapping("/topics")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<TopicDTO> createTopic(@RequestBody TopicDTO topicDto) {
+        TopicDTO createdTopic = adminService.createTopic(topicDto);
+        return ResponseEntity.created(URI.create("/api/admin/topics/" + createdTopic.id())).body(createdTopic);
+    }
+
+    @PutMapping("/topics/{topicId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<TopicDTO> updateTopic(@PathVariable Long topicId, @RequestBody TopicDTO topicDto) {
+        TopicDTO updatedTopic = adminService.updateTopic(topicId, topicDto);
+        return ResponseEntity.ok(updatedTopic);
+    }
+
+    @DeleteMapping("/topics/{topicId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Void> deleteTopic(@PathVariable Long topicId) {
+        adminService.deleteTopic(topicId);
         return ResponseEntity.noContent().build();
     }
 }

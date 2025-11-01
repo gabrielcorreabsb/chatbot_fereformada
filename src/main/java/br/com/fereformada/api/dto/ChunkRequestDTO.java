@@ -2,6 +2,8 @@ package br.com.fereformada.api.dto;
 
 import br.com.fereformada.api.model.ContentChunk;
 
+import java.util.List;
+
 public record ChunkRequestDTO(
         String content,
         String question,
@@ -10,7 +12,8 @@ public record ChunkRequestDTO(
         Integer chapterNumber,
         Integer sectionNumber,
         String subsectionTitle,
-        String subSubsectionTitle
+        String subSubsectionTitle,
+        List<Long>topicIds
 ) {
     // Método auxiliar para mapear o DTO para a Entidade
     public void toEntity(ContentChunk chunk) {

@@ -1,8 +1,15 @@
 package br.com.fereformada.api.model;
 
+import com.fasterxml.jackson.annotation.JsonManagedReference;
+import io.hypersistence.utils.hibernate.type.array.FloatArrayType;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+import io.hypersistence.utils.hibernate.type.array.FloatArrayType;
+import org.hibernate.annotations.Type;
+
 import java.util.HashSet;
 import java.util.Set;
 
@@ -22,10 +29,10 @@ public class ContentChunk {
     @Column(columnDefinition = "TEXT")
     private String question;
 
-    @Column(columnDefinition = "TEXT") // <-- CORREÇÃO AQUI
+    @Column(columnDefinition = "TEXT")
     private String sectionTitle;
 
-    @Column(columnDefinition = "TEXT") // <-- CORREÇÃO AQUI
+    @Column(columnDefinition = "TEXT")
     private String chapterTitle;
 
     private Integer chapterNumber;
@@ -38,6 +45,7 @@ public class ContentChunk {
     @Column(name = "sub_subsection_title", columnDefinition = "TEXT")
     private String subSubsectionTitle;
 
+    // ✅ CORREÇÃO AQUI: Adicionar @JdbcTypeCode
     @Column(name = "content_vector", columnDefinition = "vector(768)")
     private float[] contentVector;
 
@@ -51,5 +59,6 @@ public class ContentChunk {
             joinColumns = @JoinColumn(name = "chunk_id"),
             inverseJoinColumns = @JoinColumn(name = "topic_id")
     )
+    @JsonManagedReference
     private Set<Topic> topics = new HashSet<>();
 }
