@@ -4,6 +4,7 @@ import br.com.fereformada.api.dto.ChunkProjection;
 import br.com.fereformada.api.dto.ChunkTopicProjection;
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
+import jakarta.persistence.EntityNotFoundException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -138,4 +139,18 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     @Modifying
     @Query(value = "DELETE FROM content_chunks WHERE id IN :chunkIds", nativeQuery = true)
     void deleteChunksByIds(@Param("chunkIds") List<Long> chunkIds);
+
+    // ✅ NOVO: Verifica se um chunk existe sem carregar o vetor
+    @Query("SELECT CASE WHEN COUNT(c) > 0 THEN true ELSE false END FROM ContentChunk c WHERE c.id = :id")
+    boolean existsByIdSafe(@Param("id") Long id);
+
+    // ✅ NOVO: Deleta um único chunk via SQL nativo
+    @Modifying
+    @Query(value = "DELETE FROM content_chunks WHERE id = :chunkId", nativeQuery = true)
+    void deleteChunkById(@Param("chunkId") Long chunkId);
+
+    // ✅ NOVO: Deleta relações de um único chunk
+    @Modifying
+    @Query(value = "DELETE FROM chunk_topics WHERE chunk_id = :chunkId", nativeQuery = true)
+    void deleteChunkTopicsByChunkId(@Param("chunkId") Long chunkId);
 }

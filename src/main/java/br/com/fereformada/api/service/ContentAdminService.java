@@ -263,10 +263,16 @@ public class ContentAdminService {
     }
     @Transactional
     public void deleteChunk(Long chunkId) {
-        ContentChunk chunk = contentChunkRepository.findById(chunkId).orElseThrow(/*...*/);
-        chunk.getTopics().clear();
-        contentChunkRepository.save(chunk);
-        contentChunkRepository.delete(chunk);
+        // ✅ Verifica existência sem carregar o vetor
+        if (!contentChunkRepository.existsByIdSafe(chunkId)) {
+            throw new EntityNotFoundException("Chunk não encontrado: " + chunkId);
+        }
+
+        // 1. Deleta as relações ManyToMany
+        contentChunkRepository.deleteChunkTopicsByChunkId(chunkId);
+
+        // 2. Deleta o chunk
+        contentChunkRepository.deleteChunkById(chunkId);
     }
 
     // --- Lógica Central de Vetorização ---
