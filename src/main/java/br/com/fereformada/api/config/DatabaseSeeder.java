@@ -32,6 +32,7 @@ import java.io.InputStream;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -285,7 +286,7 @@ public class DatabaseSeeder implements CommandLineRunner {
             return;
         }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
-        Work confession = createWork(WORK_TITLE, author, 1646, "CONFISSAO", "CFW");
+        Work confession = findOrCreateWork(WORK_TITLE, author, 1646, "CONFISSAO", "CFW");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/confissao_westminster.pdf", 3, 21);
 
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseWestminsterConfession(rawText);
@@ -341,7 +342,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
-        Work catechism = createWork(WORK_TITLE, author, 1648, "CATECISMO", "CM");
+        Work catechism = findOrCreateWork(WORK_TITLE, author, 1648, "CATECISMO", "CM");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/catecismo_maior_westminster.pdf");
 
         List<ChunkingService.ParsedQuestionChunk> parsedChunks = chunkingService.parseWestminsterLargerCatechism(rawText);
@@ -398,7 +399,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
-        Work catechism = createWork(WORK_TITLE, author, 1647, "CATECISMO", "BC");
+        Work catechism = findOrCreateWork(WORK_TITLE, author, 1647, "CATECISMO", "BC");
         String rawText = extractTextFromPdf("classpath:data-content/pdf/breve_catecismo_westminster.pdf");
 
         List<ChunkingService.ParsedQuestionChunk> parsedChunks = chunkingService.parseWestminsterShorterCatechism(rawText);
@@ -457,7 +458,7 @@ public class DatabaseSeeder implements CommandLineRunner {
 
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
-        Work institutes = createWork(WORK_TITLE, author, 1536, "LIVRO", "ICR"); // "Institutas da Religião Cristã"
+        Work institutes = findOrCreateWork(WORK_TITLE, author, 1536, "LIVRO", "ICR"); // "Institutas da Religião Cristã"
         String rawText = extractTextFromPdf("classpath:data-content/pdf/Institutas da Religiao Crista - Joao Calvino.pdf", 36, 367);
 
         List<ChunkingService.ParsedChunk> parsedChunks = chunkingService.parseCalvinInstitutes(rawText);
@@ -540,13 +541,23 @@ public class DatabaseSeeder implements CommandLineRunner {
         }
     }
 
-    private Work createWork(String title, Author author, int year, String type, String acronym) {
+    private Work findOrCreateWork(String title, Author author, int year, String type, String acronym) {
+        // 1. Tenta encontrar a obra pelo título (que agora é ÚNICO)
+        Optional<Work> existingWork = workRepository.findByTitle(title);
+
+        if (existingWork.isPresent()) {
+            // Se encontrou, apenas a retorna. Não faz nada.
+            return existingWork.get();
+        }
+
+        // 2. Se não encontrou, cria a nova obra
+        logger.info("Criando nova obra no seeder: {}", title);
         Work work = new Work();
         work.setTitle(title);
         work.setAuthor(author);
         work.setPublicationYear(year);
         work.setType(type);
-        work.setAcronym(acronym); // <-- LINHA CRUCIAL ADICIONADA
+        work.setAcronym(acronym);
         return workRepository.save(work);
     }
 
@@ -866,7 +877,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         logger.info("Carregando e catalogando '{}'...", WORK_TITLE);
 
         // 1. Crie a entrada para a obra (Work)
-        Work berkhofWork = createWork(WORK_TITLE, author, 1932, "TEOLOGIA_SISTEMATICA", "TSB"); // "Teologia Sistemática de Berkhof"
+        Work berkhofWork = findOrCreateWork(WORK_TITLE, author, 1932, "TEOLOGIA_SISTEMATICA", "TSB"); // "Teologia Sistemática de Berkhof"
         berkhofWork.setAcronym("TSB"); // Adicionando o acrônimo
         workRepository.save(berkhofWork);
 

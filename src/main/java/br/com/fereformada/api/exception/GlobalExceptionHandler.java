@@ -2,8 +2,10 @@ package br.com.fereformada.api.exception;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.context.request.WebRequest;
@@ -51,4 +53,31 @@ public class GlobalExceptionHandler {
 
         return new ResponseEntity<>(body, status);
     }
+
+    // Evitar duplicação
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorResponse> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
+        String message = "Violação de dados: Ocorreu um erro ao salvar. Verifique se o item já existe.";
+
+        // Tenta extrair uma mensagem mais amigável
+        if (ex.getCause() instanceof org.hibernate.exception.ConstraintViolationException) {
+            String constraintName = ((org.hibernate.exception.ConstraintViolationException) ex.getCause())
+                    .getConstraintName();
+
+            if (constraintName.contains("unique_work_title")) {
+                message = "Já existe uma Obra com este Título.";
+            } else if (constraintName.contains("unique_author_name")) {
+                message = "Já existe um Autor com este Nome.";
+            } else if (constraintName.contains("unique_topic_name")) {
+                message = "Já existe um Tópico com este Nome.";
+            }
+        }
+
+        logger.warn("Falha de Integridade de Dados: {}", message);
+
+        // Retorna um DTO de Erro com o status 409 (Conflict)
+        return new ResponseEntity<>(new ErrorResponse(message), HttpStatus.CONFLICT);
+    }
+
+    public record ErrorResponse(String message) {}
 }
