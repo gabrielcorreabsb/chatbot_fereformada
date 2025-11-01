@@ -1,5 +1,6 @@
 package br.com.fereformada.api.model;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import com.fasterxml.jackson.annotation.JsonManagedReference;
 import io.hypersistence.utils.hibernate.type.array.FloatArrayType;
 import jakarta.persistence.*;
@@ -47,10 +48,12 @@ public class ContentChunk {
 
     // ✅ CORREÇÃO AQUI: Adicionar @JdbcTypeCode
     @Column(name = "content_vector", columnDefinition = "vector(768)")
+    @Basic(fetch = FetchType.LAZY)
     private float[] contentVector;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "work_id", nullable = false)
+    @JsonBackReference("work-chunks")
     private Work work;
 
     @ManyToMany(cascade = {CascadeType.PERSIST, CascadeType.MERGE})

@@ -80,13 +80,22 @@ public class ContentAdminService {
     }
     @Transactional
     public void deleteWork(Long workId) {
-        if (!workRepository.existsById(workId)) throw new EntityNotFoundException(/*...*/);
-        List<ContentChunk> chunksToDelete = contentChunkRepository.findAllByWorkId(workId);
-        for (ContentChunk chunk : chunksToDelete) {
-            chunk.getTopics().clear();
+        if (!workRepository.existsById(workId)) {
+            throw new EntityNotFoundException("Obra não encontrada: " + workId);
         }
-        contentChunkRepository.saveAll(chunksToDelete);
-        contentChunkRepository.deleteAll(chunksToDelete);
+
+        // 1. Busca apenas os IDs dos chunks (SEM carregar o content_vector)
+        List<Long> chunkIds = contentChunkRepository.findChunkIdsByWorkId(workId);
+
+        if (!chunkIds.isEmpty()) {
+            // 2. Deleta as relações ManyToMany na tabela chunk_topics
+            contentChunkRepository.deleteChunkTopicsByChunkIds(chunkIds);
+
+            // 3. Deleta os chunks usando SQL nativo direto
+            contentChunkRepository.deleteChunksByIds(chunkIds);
+        }
+
+        // 4. Finalmente, deleta a obra
         workRepository.deleteById(workId);
     }
 
