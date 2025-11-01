@@ -102,10 +102,7 @@ public class DatabaseSeeder implements CommandLineRunner {
         // Garantir que tópicos e autores existem
         ensureTopicsAndAuthorsExist();
 
-        // Carregar apenas o que está faltando
-        loadMissingData(status);
-
-        logger.info("🎉 Carga de dados finalizada com sucesso!");
+        logger.info("✅ DatabaseSeeder: Dependências prontas. Catalogação de conteúdo pulada (será feita via Painel Admin).");
     }
 
     private DatabaseStatus checkDatabaseStatus() {
