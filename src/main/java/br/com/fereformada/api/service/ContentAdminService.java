@@ -279,8 +279,25 @@ public class ContentAdminService {
 
     @Transactional(readOnly = true)
     public ChunkResponseDTO findChunkById(Long chunkId) {
-        ContentChunk chunk = contentChunkRepository.findById(chunkId).orElseThrow(/*...*/);
-        return new ChunkResponseDTO(chunk);
+        // ContentChunk chunk = contentChunkRepository.findById(chunkId).orElseThrow(/*...*/); // <-- O BUG ESTÁ AQUI
+        // return new ChunkResponseDTO(chunk);
+
+        // --- A NOVA LÓGICA ---
+
+        // 1. Busca o Chunk (sem vetor) usando a projeção
+        ChunkProjection projection = contentChunkRepository.findProjectionById(chunkId) // <-- Nome novo
+                .orElseThrow(() -> new EntityNotFoundException("Chunk não encontrado: " + chunkId));
+
+        // 2. Busca os Tópicos para esse chunk
+        List<ChunkTopicProjection> topicRelations = contentChunkRepository.findTopicsForChunkIds(List.of(chunkId));
+
+        // 3. Mapeia os tópicos para DTOs
+        Set<TopicDTO> topics = topicRelations.stream()
+                .map(proj -> new TopicDTO(proj.topicId(), proj.topicName(), proj.topicDescription()))
+                .collect(Collectors.toSet());
+
+        // 4. "Costura" os dados no DTO de resposta final
+        return new ChunkResponseDTO(projection, topics);
     }
 
     @Transactional

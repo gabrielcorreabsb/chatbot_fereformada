@@ -33,8 +33,7 @@ public class ChunkResponseDTO {
     public ChunkResponseDTO(ChunkProjection projection, Set<TopicDTO> topics) {
         this.id = projection.id();
         // Limita o conteúdo para a tabela
-        this.content = projection.content() != null ?
-                projection.content().substring(0, Math.min(projection.content().length(), 100)) + "..." : null;
+        this.content = projection.content();
         this.question = projection.question();
         this.sectionTitle = projection.sectionTitle();
         this.chapterTitle = projection.chapterTitle();

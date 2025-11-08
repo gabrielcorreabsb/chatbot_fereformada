@@ -13,6 +13,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long> {
@@ -96,8 +97,11 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     List<ContentChunk> searchByKeywords(@Param("keyword") String keyword, Pageable pageable);
 
     long countByContentVectorIsNotNull();
+
     long countByWorkTitle(@Param("workTitle") String workTitle);
+
     List<ContentChunk> findByContentContainingIgnoreCase(@Param("keyword") String keyword, Pageable pageable);
+
     List<ContentChunk> findTopByTopicsAndWorkTitle(@Param("topics") Set<Topic> topics, @Param("workTitle") String workTitle, Pageable pageable);
 
     // ===================================================================
@@ -149,7 +153,17 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     @Query(value = "DELETE FROM content_chunks WHERE id = :chunkId", nativeQuery = true)
     void deleteChunkById(@Param("chunkId") Long chunkId);
 
-    // ✅ NOVO: Deleta relações de um único chunk
+
+    //    PROCURA UM ÚNICO CHUNK
+    @Query("SELECT new br.com.fereformada.api.dto.ChunkProjection(" +
+            "  c.id, c.content, c.question, c.sectionTitle, c.chapterTitle, " +
+            "  c.chapterNumber, c.sectionNumber, c.subsectionTitle, " +
+            "  c.subSubsectionTitle, c.work.id, c.work.title " +
+            ") " +
+            "FROM ContentChunk c " +
+            "WHERE c.id = :chunkId")
+    Optional<ChunkProjection> findProjectionById(@Param("chunkId") Long chunkId);
+
     @Modifying
     @Query(value = "DELETE FROM chunk_topics WHERE chunk_id = :chunkId", nativeQuery = true)
     void deleteChunkTopicsByChunkId(@Param("chunkId") Long chunkId);
