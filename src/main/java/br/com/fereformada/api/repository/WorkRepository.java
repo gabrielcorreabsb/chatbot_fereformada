@@ -16,5 +16,6 @@ public interface WorkRepository extends JpaRepository<Work, Long> {
      * @return um Optional contendo a Work se encontrada, ou um Optional vazio caso contrário.
      */
     Optional<Work> findByTitle(String title);
+    Optional<Work> findByAcronym(String acronym);
 
 }

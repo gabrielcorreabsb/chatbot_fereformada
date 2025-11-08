@@ -9,43 +9,51 @@ import br.com.fereformada.api.repository.AuthorRepository;
 import br.com.fereformada.api.repository.ContentChunkRepository;
 import br.com.fereformada.api.repository.TopicRepository;
 import br.com.fereformada.api.repository.WorkRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pgvector.PGvector;
 import jakarta.persistence.EntityNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.io.InputStream;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 public class ContentAdminService {
 
+    private final ObjectMapper objectMapper;
     private final ContentChunkRepository contentChunkRepository;
     private final WorkRepository workRepository;
     private final AuthorRepository authorRepository;
     private final TopicRepository topicRepository;
     private final GeminiApiClient geminiApiClient;
 
-    // Construtor (como você já tem)
+    private static final int EMBEDDING_BATCH_SIZE = 50;
+
+    private static final Logger logger = LoggerFactory.getLogger(ContentAdminService.class);
+
     public ContentAdminService(ContentChunkRepository contentChunkRepository,
                                WorkRepository workRepository,
                                AuthorRepository authorRepository,
                                TopicRepository topicRepository,
-                               GeminiApiClient geminiApiClient) {
-        // ... (atribuições)
+                               GeminiApiClient geminiApiClient, ObjectMapper objectMapper) {
+
         this.contentChunkRepository = contentChunkRepository;
         this.workRepository = workRepository;
         this.authorRepository = authorRepository;
         this.topicRepository = topicRepository;
         this.geminiApiClient = geminiApiClient;
+        this.objectMapper = objectMapper;
     }
 
     // --- Métodos de Obras (Works) ---
@@ -54,6 +62,7 @@ public class ContentAdminService {
     public Page<WorkResponseDTO> findAllWorks(Pageable pageable) {
         return workRepository.findAll(pageable).map(WorkResponseDTO::new);
     }
+
     @Transactional
     public WorkResponseDTO createWork(WorkDTO dto) {
         Author author = authorRepository.findById(dto.authorId()).orElseThrow(/*...*/);
@@ -66,6 +75,7 @@ public class ContentAdminService {
         Work newWork = workRepository.save(work);
         return new WorkResponseDTO(newWork);
     }
+
     @Transactional
     public WorkResponseDTO updateWork(Long workId, WorkDTO dto) {
         Work work = workRepository.findById(workId).orElseThrow(/*...*/);
@@ -78,6 +88,7 @@ public class ContentAdminService {
         Work updatedWork = workRepository.save(work);
         return new WorkResponseDTO(updatedWork);
     }
+
     @Transactional
     public void deleteWork(Long workId) {
         if (!workRepository.existsById(workId)) {
@@ -105,10 +116,12 @@ public class ContentAdminService {
     public Page<AuthorDTO> findAllAuthors(Pageable pageable) {
         return authorRepository.findAll(pageable).map(AuthorDTO::new);
     }
+
     @Transactional(readOnly = true)
     public List<AuthorDTO> findAllAuthorsList() {
         return authorRepository.findAll().stream().map(AuthorDTO::new).collect(Collectors.toList());
     }
+
     @Transactional
     public AuthorDTO createAuthor(AuthorDTO dto) {
         Author author = new Author();
@@ -120,6 +133,7 @@ public class ContentAdminService {
         Author savedAuthor = authorRepository.save(author);
         return new AuthorDTO(savedAuthor);
     }
+
     @Transactional
     public AuthorDTO updateAuthor(Long authorId, AuthorDTO dto) {
         Author author = authorRepository.findById(authorId).orElseThrow(/*...*/);
@@ -131,6 +145,7 @@ public class ContentAdminService {
         Author updatedAuthor = authorRepository.save(author);
         return new AuthorDTO(updatedAuthor);
     }
+
     @Transactional
     public void deleteAuthor(Long authorId) {
         Author author = authorRepository.findById(authorId).orElseThrow(/*...*/);
@@ -146,10 +161,12 @@ public class ContentAdminService {
     public Page<TopicDTO> findAllTopics(Pageable pageable) {
         return topicRepository.findAll(pageable).map(TopicDTO::new);
     }
+
     @Transactional(readOnly = true)
     public List<TopicDTO> findAllTopicsList() {
         return topicRepository.findAll().stream().map(TopicDTO::new).collect(Collectors.toList());
     }
+
     @Transactional
     public TopicDTO createTopic(TopicDTO dto) {
         Topic topic = new Topic();
@@ -157,6 +174,7 @@ public class ContentAdminService {
         Topic savedTopic = topicRepository.save(topic);
         return new TopicDTO(savedTopic);
     }
+
     @Transactional
     public TopicDTO updateTopic(Long topicId, TopicDTO dto) {
         Topic topic = topicRepository.findById(topicId).orElseThrow(/*...*/);
@@ -164,6 +182,7 @@ public class ContentAdminService {
         Topic updatedTopic = topicRepository.save(topic);
         return new TopicDTO(updatedTopic);
     }
+
     @Transactional
     public void deleteTopic(Long topicId) {
         Topic topic = topicRepository.findById(topicId).orElseThrow(/*...*/);
@@ -241,6 +260,7 @@ public class ContentAdminService {
         ContentChunk savedChunk = contentChunkRepository.save(chunk);
         return new ChunkResponseDTO(savedChunk);
     }
+
     @Transactional
     public ChunkResponseDTO updateChunk(Long chunkId, ChunkRequestDTO dto) {
         ContentChunk chunk = contentChunkRepository.findById(chunkId).orElseThrow(/*...*/);
@@ -256,11 +276,13 @@ public class ContentAdminService {
         ContentChunk updatedChunk = contentChunkRepository.save(chunk);
         return new ChunkResponseDTO(updatedChunk);
     }
+
     @Transactional(readOnly = true)
     public ChunkResponseDTO findChunkById(Long chunkId) {
         ContentChunk chunk = contentChunkRepository.findById(chunkId).orElseThrow(/*...*/);
         return new ChunkResponseDTO(chunk);
     }
+
     @Transactional
     public void deleteChunk(Long chunkId) {
         // ✅ Verifica existência sem carregar o vetor
@@ -298,4 +320,158 @@ public class ContentAdminService {
                 .orElseThrow(() -> new EntityNotFoundException("Obra não encontrada: " + workId));
         return new WorkResponseDTO(work); // Converte para o DTO seguro
     }
+
+    @Transactional
+    public String bulkImportChunksFromJson(MultipartFile file) throws Exception {
+        if (!"application/json".equals(file.getContentType())) {
+            throw new IllegalArgumentException("Formato de arquivo inválido. Apenas .json é permitido.");
+        }
+
+        List<ChunkImportDTO> dtoList;
+        try (InputStream inputStream = file.getInputStream()) {
+            dtoList = objectMapper.readValue(inputStream, new TypeReference<List<ChunkImportDTO>>() {
+            });
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Erro ao processar o JSON: " + e.getMessage());
+        }
+
+        if (dtoList == null || dtoList.isEmpty()) {
+            throw new IllegalArgumentException("O arquivo JSON está vazio ou mal formatado.");
+        }
+
+        int processedCount = 0;
+        for (ChunkImportDTO dto : dtoList) {
+            // 1. Encontrar a Obra (Work) pelo acrônimo
+            Work work = workRepository.findByAcronym(dto.workAcronym())
+                    .orElseThrow(() -> new IllegalArgumentException("Acrônimo de Obra não encontrado: " + dto.workAcronym()));
+
+            // 2. Encontrar os Tópicos (Topics)
+            Set<Topic> topics = topicRepository.findByNameIn(dto.topics());
+
+            // 3. Montar o texto para vetorização
+            String textToEmbed = buildTextToEmbed(dto);
+
+            // 4. Gerar o embedding (VETORIZAÇÃO NA INGESTÃO!)
+            PGvector pgVector = geminiApiClient.generateEmbedding(textToEmbed);
+            float[] vector = (pgVector != null) ? pgVector.toArray() : null;
+
+            // 5. Criar a entidade ContentChunk
+            ContentChunk chunk = new ContentChunk();
+            chunk.setWork(work);
+            chunk.setChapterTitle(dto.chapterTitle());
+            chunk.setChapterNumber(dto.chapterNumber());
+            chunk.setSectionTitle(dto.sectionTitle());
+            chunk.setSectionNumber(dto.sectionNumber());
+            chunk.setSubsectionTitle(dto.subsectionTitle());
+            chunk.setSubSubsectionTitle(dto.subSubsectionTitle());
+            chunk.setQuestion(dto.question());
+            chunk.setContent(dto.content());
+            chunk.setTopics(topics);
+            chunk.setContentVector(vector); // Vetor é salvo aqui!
+
+            // 6. Salvar
+            contentChunkRepository.save(chunk);
+            processedCount++;
+        }
+
+        return "Importação concluída com sucesso. " + processedCount + " chunks processados e salvos.";
+    }
+
+    /**
+     * Helper para construir o texto que será enviado ao Gemini para vetorização.
+     */
+    private String buildTextToEmbed(ChunkImportDTO dto) {
+        StringBuilder sb = new StringBuilder();
+        if (dto.question() != null && !dto.question().isBlank()) {
+            sb.append(dto.question()).append("\n").append(dto.content());
+        } else {
+            if (dto.chapterTitle() != null) sb.append(dto.chapterTitle()).append(". ");
+            if (dto.sectionTitle() != null) sb.append(dto.sectionTitle()).append(". ");
+            if (dto.subsectionTitle() != null) sb.append(dto.subsectionTitle()).append(". ");
+            sb.append(dto.content());
+        }
+        return sb.toString();
+    }
+
+    @Transactional
+    public String bulkImportChunksFromDTO(List<ChunkImportDTO> dtoList) throws Exception {
+        if (dtoList == null || dtoList.isEmpty()) {
+            throw new IllegalArgumentException("A lista de chunks está vazia.");
+        }
+
+        // --- ETAPA 1: Preparar os dados (Exatamente como antes) ---
+
+        List<String> textsToEmbed = new ArrayList<>();
+        List<ContentChunk> chunksToSave = new ArrayList<>();
+
+        for (ChunkImportDTO dto : dtoList) {
+            Work work = workRepository.findByAcronym(dto.workAcronym())
+                    .orElseThrow(() -> new IllegalArgumentException("Acrônimo de Obra não encontrado: " + dto.workAcronym()));
+
+            Set<Topic> topics = new HashSet<>();
+            if (dto.topics() != null && !dto.topics().isEmpty()) {
+                topics = topicRepository.findByNameIn(dto.topics());
+            }
+
+            String textToEmbed = buildTextToEmbed(dto);
+            textsToEmbed.add(textToEmbed);
+
+            ContentChunk chunk = new ContentChunk();
+            chunk.setWork(work);
+            chunk.setChapterTitle(dto.chapterTitle());
+            chunk.setChapterNumber(dto.chapterNumber());
+            chunk.setSectionTitle(dto.sectionTitle());
+            chunk.setSectionNumber(dto.sectionNumber());
+            chunk.setSubsectionTitle(dto.subsectionTitle());
+            chunk.setSubSubsectionTitle(dto.subSubsectionTitle());
+            chunk.setQuestion(dto.question());
+            chunk.setContent(dto.content());
+            chunk.setTopics(topics);
+
+            chunksToSave.add(chunk);
+        }
+
+        // --- ETAPA 2: Vetorização em Lotes (A MUDANÇA ESTÁ AQUI) ---
+
+        int totalChunks = chunksToSave.size();
+
+        // Iterar sobre a lista em "lotes" de EMBEDDING_BATCH_SIZE
+        for (int i = 0; i < totalChunks; i += EMBEDDING_BATCH_SIZE) {
+            int end = Math.min(i + EMBEDDING_BATCH_SIZE, totalChunks);
+
+            // 1. Pegar o sub-lote de textos e chunks
+            List<String> textBatch = textsToEmbed.subList(i, end);
+            List<ContentChunk> chunkBatch = chunksToSave.subList(i, end);
+
+            logger.info("Processando lote de embedding {}/{} ({} chunks)",
+                    (i / EMBEDDING_BATCH_SIZE) + 1,
+                    (int) Math.ceil((double) totalChunks / EMBEDDING_BATCH_SIZE),
+                    textBatch.size());
+
+            // 2. Fazer a chamada de API para o LOTE MENOR
+            List<PGvector> vectorBatch = geminiApiClient.generateEmbeddingsInBatch(textBatch);
+
+            if (vectorBatch.size() != chunkBatch.size()) {
+                throw new RuntimeException("Erro na vetorização: o número de vetores (" + vectorBatch.size() + ") " +
+                        "não corresponde ao número de chunks (" + chunkBatch.size() + ")");
+            }
+
+            // 3. "Costurar" os vetores de volta nos chunks (rápido, em memória)
+            for (int j = 0; j < chunkBatch.size(); j++) {
+                ContentChunk chunk = chunkBatch.get(j);
+                PGvector vector = vectorBatch.get(j);
+                chunk.setContentVector(vector != null ? vector.toArray() : null);
+            }
+        }
+
+        // --- ETAPA 3: Salvar ---
+
+        logger.info("Vetorização concluída. Salvando {} chunks no banco de dados...", totalChunks);
+
+        // Salva TODOS os chunks (que agora têm vetores) no banco de dados
+        contentChunkRepository.saveAll(chunksToSave);
+
+        return "Importação otimizada concluída. " + totalChunks + " chunks processados e salvos.";
+    }
+
 }

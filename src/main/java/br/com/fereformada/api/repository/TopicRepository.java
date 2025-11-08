@@ -4,7 +4,9 @@ import br.com.fereformada.api.model.Topic;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.Optional;
+import java.util.Set;
 
 @Repository
 public interface TopicRepository extends JpaRepository<Topic, Long> {
@@ -17,5 +19,5 @@ public interface TopicRepository extends JpaRepository<Topic, Long> {
      * @return um Optional contendo o Topic se encontrado, ou um Optional vazio caso contrário.
      */
     Optional<Topic> findByName(String name);
-
+    Set<Topic> findByNameIn(Collection<String> names);
 }

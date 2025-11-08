@@ -3,6 +3,7 @@ package br.com.fereformada.api.config;
 import br.com.fereformada.api.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -28,17 +29,17 @@ public class SecurityConfig {
                 // Desabilita CSRF (não necessário para APIs stateless)
                 .csrf(csrf -> csrf.disable())
 
-                // Habilita o CORS no nível do Spring Security
-                .cors(Customizer.withDefaults())
-
                 // Adiciona o seu filtro JWT antes do filtro padrão do Spring
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+
+
 
                 // Define a política de sessão como STATELESS (sem sessão no servidor)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
                 // Define as regras de autorização
                 .authorizeHttpRequests(authz -> authz
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         //.requestMatchers("/api/public/**").permitAll() // Exemplo de rotas públicas
                         .requestMatchers("/api/v1/**").authenticated() // Protege sua API v1
                         // Exige autenticação para todos os endpoints de admin
