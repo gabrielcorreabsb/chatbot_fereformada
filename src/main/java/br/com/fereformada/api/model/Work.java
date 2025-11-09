@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.Formula;
 
 import java.util.List;
 
@@ -47,4 +48,7 @@ public class Work {
 
     @OneToMany(mappedBy = "work", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<ContentChunk> contentChunks;
+
+    @Formula("(SELECT COUNT(c.id) FROM content_chunks c WHERE c.work_id = id)")
+    private long chunkCount;
 }
