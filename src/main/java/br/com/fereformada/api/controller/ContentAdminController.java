@@ -3,6 +3,7 @@ package br.com.fereformada.api.controller;
 import br.com.fereformada.api.dto.*;
 import br.com.fereformada.api.model.Author;
 import br.com.fereformada.api.model.Topic;
+import br.com.fereformada.api.service.AsyncImportService;
 import br.com.fereformada.api.service.ContentAdminService; // Removido Repos
 import jakarta.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
@@ -28,8 +29,11 @@ public class ContentAdminController {
     private static final Logger logger = LoggerFactory.getLogger(ContentAdminController.class);
     // Removemos os repositórios, o Serviço agora lida com tudo
 
-    public ContentAdminController(ContentAdminService adminService) {
+    private final AsyncImportService asyncImportService;
+
+    public ContentAdminController(ContentAdminService adminService, AsyncImportService asyncImportService) {
         this.adminService = adminService;
+        this.asyncImportService = asyncImportService;
     }
 
     // === Endpoints de Obras (Works) ===
@@ -183,14 +187,16 @@ public class ContentAdminController {
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ImportTaskDTO> bulkImportChunks(@RequestBody List<ChunkImportDTO> dtoList) {
         try {
-            // Chamar o novo método "start"
-            ImportTaskDTO taskDTO = adminService.startBulkImport(dtoList);
+            // 3. ETAPA 1: Criar a tarefa (Isso é uma transação completa que faz commit)
+            ImportTaskDTO taskDTO = adminService.createImportTask(dtoList);
 
-            // Retornar HTTP 202 (Accepted) com o ID da tarefa
+            // 4. ETAPA 2: Chamar o método @Async (AGORA a tarefa já existe no DB)
+            asyncImportService.processImport(taskDTO.id(), dtoList);
+
+            // 5. Retornar HTTP 202 (Accepted) com o ID da tarefa
             return ResponseEntity.status(HttpStatus.ACCEPTED).body(taskDTO);
 
         } catch (Exception e) {
-            // Lidar com erros de validação inicial (ex: lista vazia)
             return ResponseEntity.badRequest().body(null); // Simplificado
         }
     }

@@ -32,7 +32,7 @@ public class AsyncImportService {
     private final ContentChunkRepository contentChunkRepository;
     private final GeminiApiClient geminiApiClient;
 
-    private static final int EMBEDDING_BATCH_SIZE = 50;
+    private static final int EMBEDDING_BATCH_SIZE = 10;
     private static final Logger logger = LoggerFactory.getLogger(AsyncImportService.class);
 
     public AsyncImportService(ImportTaskRepository importTaskRepository,

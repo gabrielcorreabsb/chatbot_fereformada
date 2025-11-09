@@ -418,7 +418,7 @@ public class ContentAdminService {
     }
 
     @Transactional
-    public ImportTaskDTO startBulkImport(List<ChunkImportDTO> dtoList) {
+    public ImportTaskDTO createImportTask(List<ChunkImportDTO> dtoList) {
         if (dtoList == null || dtoList.isEmpty()) {
             throw new IllegalArgumentException("A lista de chunks está vazia.");
         }
@@ -429,10 +429,10 @@ public class ContentAdminService {
         task.setCurrentLog("Tarefa enfileirada, aguardando início...");
         ImportTask savedTask = importTaskRepository.save(task);
 
-        // 2. Chamar o serviço @Async (retorna imediatamente)
-        asyncImportService.processImport(savedTask.getId(), dtoList);
+        // 2. REMOVEMOS a chamada ao 'asyncImportService.processImport' daqui.
+        // A transação fará o commit assim que este método retornar.
 
-        // 3. Retornar o DTO da tarefa para o controller
+        // 3. Retornar o DTO da tarefa
         return new ImportTaskDTO(savedTask);
     }
 
