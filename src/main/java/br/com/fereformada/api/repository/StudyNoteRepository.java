@@ -1,6 +1,8 @@
 package br.com.fereformada.api.repository;
 
+import br.com.fereformada.api.dto.StudyNoteProjection;
 import br.com.fereformada.api.model.StudyNote;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -8,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 @Repository
@@ -120,4 +123,48 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
             @Param("book") String book,
             @Param("chapter") int chapter
     );
+
+    // ===================================================================
+    // NOVOS MÉTODOS - PAINEL ADMIN
+    // ===================================================================
+
+    /**
+     * Busca uma página de StudyNotes usando Projeção (seguro contra vetor nulo).
+     */
+    @Query("SELECT new br.com.fereformada.api.dto.StudyNoteProjection(" +
+            "  s.id, s.book, s.startChapter, s.startVerse, s.endChapter, " +
+            "  s.endVerse, s.noteContent, s.source " +
+            ") " +
+            "FROM StudyNote s")
+    Page<StudyNoteProjection> findAllProjection(Pageable pageable);
+
+    /**
+     * Busca uma página de StudyNotes usando ProjeKAO e um termo de busca.
+     */
+    @Query("SELECT new br.com.fereformada.api.dto.StudyNoteProjection(" +
+            "  s.id, s.book, s.startChapter, s.startVerse, s.endChapter, " +
+            "  s.endVerse, s.noteContent, s.source " +
+            ") " +
+            "FROM StudyNote s " +
+            "WHERE ( " +
+            "   LOWER(s.book) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
+            "   LOWER(s.noteContent) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
+            "   LOWER(s.source) LIKE LOWER(CONCAT('%', :search, '%')) " +
+            ")")
+    Page<StudyNoteProjection> searchAllProjection(
+            @Param("search") String search,
+            Pageable pageable
+    );
+
+    /**
+     * Busca uma ÚNICA StudyNote por ID usando Projeção.
+     * Necessário para o modal "Editar".
+     */
+    @Query("SELECT new br.com.fereformada.api.dto.StudyNoteProjection(" +
+            "  s.id, s.book, s.startChapter, s.startVerse, s.endChapter, " +
+            "  s.endVerse, s.noteContent, s.source " +
+            ") " +
+            "FROM StudyNote s " +
+            "WHERE s.id = :id")
+    Optional<StudyNoteProjection> findProjectionById(@Param("id") Long id);
 }
