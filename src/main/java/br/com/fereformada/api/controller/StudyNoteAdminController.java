@@ -1,8 +1,9 @@
 package br.com.fereformada.api.controller;
 
 import br.com.fereformada.api.dto.StudyNoteProjection;
-import br.com.fereformada.api.dto.StudyNoteRequestDTO; // (Precisaremos criar este)
-import br.com.fereformada.api.model.StudyNote;
+import br.com.fereformada.api.dto.StudyNoteRequestDTO;
+import br.com.fereformada.api.dto.StudyNoteSourceDTO;
+// import br.com.fereformada.api.model.StudyNote; // <-- Não é mais necessário para o 'create'
 import br.com.fereformada.api.service.StudyNoteAdminService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -10,9 +11,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/admin/studynotes")
-@PreAuthorize("hasRole('ADMIN')") // Apenas Admins podem gerenciar notas
+@PreAuthorize("hasRole('ADMIN')")
 public class StudyNoteAdminController {
 
     private final StudyNoteAdminService studyNoteAdminService;
@@ -23,20 +26,30 @@ public class StudyNoteAdminController {
 
     /**
      * GET /api/admin/studynotes
-     * Lista ou busca todas as notas com paginação.
+     * (Este método está correto)
      */
     @GetMapping
     public ResponseEntity<Page<StudyNoteProjection>> getAllNotes(
             @RequestParam(required = false) String search,
+            @RequestParam(required = false) String source,
             Pageable pageable
     ) {
-        Page<StudyNoteProjection> page = studyNoteAdminService.findAll(search, pageable);
+        Page<StudyNoteProjection> page = studyNoteAdminService.findAll(search, source, pageable);
         return ResponseEntity.ok(page);
     }
 
     /**
+     * GET /api/admin/studynotes/sources
+     * (Este método está correto)
+     */
+    @GetMapping("/sources")
+    public ResponseEntity<List<StudyNoteSourceDTO>> getSources() {
+        return ResponseEntity.ok(studyNoteAdminService.findStudyNoteCountsBySource());
+    }
+
+    /**
      * GET /api/admin/studynotes/{id}
-     * Busca uma única nota (usando projeção) para o modal "Editar".
+     * (Este método está correto)
      */
     @GetMapping("/{id}")
     public ResponseEntity<StudyNoteProjection> getNoteById(@PathVariable Long id) {
@@ -44,28 +57,32 @@ public class StudyNoteAdminController {
     }
 
     /**
-     * POST /api/admin/studynotes
-     * Cria uma nova nota de estudo.
+     * ==================================================================
+     * MÉTODO 'CREATE' REFATORADO
+     * Retorna StudyNoteProjection para evitar o bug de serialização.
+     * ==================================================================
      */
     @PostMapping
-    public ResponseEntity<StudyNote> createNote(@RequestBody StudyNoteRequestDTO dto) {
-        StudyNote createdNote = studyNoteAdminService.create(dto);
-        return ResponseEntity.ok(createdNote);
+    public ResponseEntity<StudyNoteProjection> createNote(@RequestBody StudyNoteRequestDTO dto) {
+        // O service.create() agora (corretamente) retorna uma projeção
+        StudyNoteProjection createdProjection = studyNoteAdminService.create(dto);
+        // Retornamos a projeção segura
+        return ResponseEntity.ok(createdProjection);
     }
 
     /**
      * PUT /api/admin/studynotes/{id}
-     * Atualiza uma nota de estudo.
+     * (Este método já está correto)
      */
     @PutMapping("/{id}")
-    public ResponseEntity<StudyNote> updateNote(@PathVariable Long id, @RequestBody StudyNoteRequestDTO dto) {
-        StudyNote updatedNote = studyNoteAdminService.update(id, dto);
-        return ResponseEntity.ok(updatedNote);
+    public ResponseEntity<StudyNoteProjection> updateNote(@PathVariable Long id, @RequestBody StudyNoteRequestDTO dto) {
+        StudyNoteProjection updatedProjection = studyNoteAdminService.update(id, dto);
+        return ResponseEntity.ok(updatedProjection);
     }
 
     /**
      * DELETE /api/admin/studynotes/{id}
-     * Deleta uma nota de estudo.
+     * (Este método está correto)
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteNote(@PathVariable Long id) {

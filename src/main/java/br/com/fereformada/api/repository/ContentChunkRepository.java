@@ -2,6 +2,7 @@ package br.com.fereformada.api.repository;
 
 import br.com.fereformada.api.dto.ChunkProjection;
 import br.com.fereformada.api.dto.ChunkTopicProjection;
+import br.com.fereformada.api.dto.ContentCountByWorkDTO;
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
 import jakarta.persistence.EntityNotFoundException;
@@ -200,4 +201,15 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             @Param("workId") Long workId,
             @Param("search") String search,
             Pageable pageable);
+
+    long countByContentVectorIsNull();
+
+    /**
+     * Agrupa a contagem de chunks pelo acrônimo da Obra (para o Gráfico do Dashboard).
+     */
+    @Query("SELECT new br.com.fereformada.api.dto.ContentCountByWorkDTO(w.acronym, COUNT(c)) " +
+            "FROM ContentChunk c JOIN c.work w " +
+            "GROUP BY w.acronym " +
+            "ORDER BY COUNT(c) DESC")
+    List<ContentCountByWorkDTO> findChunkCountsByWorkAcronym();
 }
