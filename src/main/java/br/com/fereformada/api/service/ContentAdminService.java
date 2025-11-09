@@ -434,5 +434,32 @@ public class ContentAdminService {
                 .orElseThrow(() -> new EntityNotFoundException("Tarefa não encontrada: " + taskId));
         return new ImportTaskDTO(task);
     }
+
+    @Transactional
+    public void bulkDeleteChunks(List<Long> chunkIds) {
+        if (chunkIds == null || chunkIds.isEmpty()) {
+            return;
+        }
+
+        // 1. Deleta as relações ManyToMany (Nós já temos este método!)
+        contentChunkRepository.deleteChunkTopicsByChunkIds(chunkIds);
+
+        // 2. Deleta os chunks (Nós também já temos este método!)
+        contentChunkRepository.deleteChunksByIds(chunkIds);
+    }
+
+    /**
+     * Adiciona tópicos em massa a um grupo de chunks.
+     */
+    @Transactional
+    public void bulkAddTopics(BulkTopicDTO dto) {
+        if (dto == null || dto.chunkIds() == null || dto.topicIds() == null ||
+                dto.chunkIds().isEmpty() || dto.topicIds().isEmpty()) {
+            return;
+        }
+
+        // 3. Chama o novo método do repositório
+        contentChunkRepository.bulkAddTopicsToChunks(dto.chunkIds(), dto.topicIds());
+    }
 }
 

@@ -203,4 +203,24 @@ public class ContentAdminController {
             return ResponseEntity.notFound().build();
         }
     }
+
+    @DeleteMapping("/chunks/bulk-delete")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Void> bulkDeleteChunks(@RequestBody IdListDTO idListDTO) {
+        adminService.bulkDeleteChunks(idListDTO.ids());
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Endpoint para ADICIONAR Tópicos em massa.
+     * Recebe nosso novo DTO.
+     */
+    @PostMapping("/chunks/bulk-add-topics")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Void> bulkAddTopicsToChunks(@RequestBody BulkTopicDTO bulkTopicDTO) {
+        adminService.bulkAddTopics(bulkTopicDTO);
+        return ResponseEntity.noContent().build();
+    }
+
+    record IdListDTO(List<Long> ids) {}
 }

@@ -167,4 +167,18 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     @Modifying
     @Query(value = "DELETE FROM chunk_topics WHERE chunk_id = :chunkId", nativeQuery = true)
     void deleteChunkTopicsByChunkId(@Param("chunkId") Long chunkId);
+
+    @Modifying
+    @Query(value = """
+            INSERT INTO chunk_topics (chunk_id, topic_id)
+            SELECT
+                c_id AS chunk_id,
+                t_id AS topic_id
+            FROM
+                unnest(?1) AS c_id
+            CROSS JOIN
+                unnest(?2) AS t_id
+            ON CONFLICT (chunk_id, topic_id) DO NOTHING
+            """, nativeQuery = true)
+    void bulkAddTopicsToChunks(List<Long> chunkIds, List<Long> topicIds);
 }
