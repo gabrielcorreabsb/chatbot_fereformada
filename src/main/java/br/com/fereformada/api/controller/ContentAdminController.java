@@ -4,6 +4,7 @@ import br.com.fereformada.api.dto.*;
 import br.com.fereformada.api.model.Author;
 import br.com.fereformada.api.model.Topic;
 import br.com.fereformada.api.service.ContentAdminService; // Removido Repos
+import jakarta.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -168,26 +169,19 @@ public class ContentAdminController {
         return ResponseEntity.noContent().build();
     }
 
-    @PostMapping("/bulk-import/chunks")
+    @PostMapping("/chunks/bulk-import")
     @PreAuthorize("hasRole('ADMIN')")
-    public ResponseEntity<String> bulkImportChunks(@RequestBody List<ChunkImportDTO> dtoList) {
-
-        logger.info(">>> [ADMIN] Recebida requisição de importação em massa com {} chunks.", dtoList.size());
-
-        if (dtoList == null || dtoList.isEmpty()) {
-            return ResponseEntity.badRequest().body("A lista de chunks enviada está vazia.");
-        }
-
+    public ResponseEntity<ImportTaskDTO> bulkImportChunks(@RequestBody List<ChunkImportDTO> dtoList) {
         try {
-            // Vamos passar a lista direto para o service
-            String result = adminService.bulkImportChunksFromDTO(dtoList);
-            return ResponseEntity.ok(result);
+            // Chamar o novo método "start"
+            ImportTaskDTO taskDTO = adminService.startBulkImport(dtoList);
 
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            // Retornar HTTP 202 (Accepted) com o ID da tarefa
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(taskDTO);
+
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Erro interno ao processar os chunks: " + e.getMessage());
+            // Lidar com erros de validação inicial (ex: lista vazia)
+            return ResponseEntity.badRequest().body(null); // Simplificado
         }
     }
 
@@ -197,5 +191,16 @@ public class ContentAdminController {
         // Este método 'findChunkById' JÁ EXISTE no seu ContentAdminService
         ChunkResponseDTO chunk = adminService.findChunkById(chunkId);
         return ResponseEntity.ok(chunk);
+    }
+
+    @GetMapping("/import-tasks/{taskId}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<ImportTaskDTO> getImportTaskStatus(@PathVariable Long taskId) {
+        try {
+            ImportTaskDTO taskDTO = adminService.getTaskStatus(taskId);
+            return ResponseEntity.ok(taskDTO);
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 }

@@ -1,14 +1,8 @@
 package br.com.fereformada.api.service;
 
 import br.com.fereformada.api.dto.*;
-import br.com.fereformada.api.model.Author;
-import br.com.fereformada.api.model.ContentChunk;
-import br.com.fereformada.api.model.Topic;
-import br.com.fereformada.api.model.Work;
-import br.com.fereformada.api.repository.AuthorRepository;
-import br.com.fereformada.api.repository.ContentChunkRepository;
-import br.com.fereformada.api.repository.TopicRepository;
-import br.com.fereformada.api.repository.WorkRepository;
+import br.com.fereformada.api.model.*;
+import br.com.fereformada.api.repository.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pgvector.PGvector;
@@ -37,6 +31,8 @@ public class ContentAdminService {
     private final AuthorRepository authorRepository;
     private final TopicRepository topicRepository;
     private final GeminiApiClient geminiApiClient;
+    private final ImportTaskRepository importTaskRepository;
+    private final AsyncImportService asyncImportService;
 
     private static final int EMBEDDING_BATCH_SIZE = 50;
 
@@ -46,7 +42,7 @@ public class ContentAdminService {
                                WorkRepository workRepository,
                                AuthorRepository authorRepository,
                                TopicRepository topicRepository,
-                               GeminiApiClient geminiApiClient, ObjectMapper objectMapper) {
+                               GeminiApiClient geminiApiClient, ObjectMapper objectMapper, ImportTaskRepository importTaskRepository, AsyncImportService asyncImportService) {
 
         this.contentChunkRepository = contentChunkRepository;
         this.workRepository = workRepository;
@@ -54,6 +50,8 @@ public class ContentAdminService {
         this.topicRepository = topicRepository;
         this.geminiApiClient = geminiApiClient;
         this.objectMapper = objectMapper;
+        this.importTaskRepository = importTaskRepository;
+        this.asyncImportService = asyncImportService;
     }
 
     // --- Métodos de Obras (Works) ---
@@ -411,84 +409,30 @@ public class ContentAdminService {
     }
 
     @Transactional
-    public String bulkImportChunksFromDTO(List<ChunkImportDTO> dtoList) throws Exception {
+    public ImportTaskDTO startBulkImport(List<ChunkImportDTO> dtoList) {
         if (dtoList == null || dtoList.isEmpty()) {
             throw new IllegalArgumentException("A lista de chunks está vazia.");
         }
 
-        // --- ETAPA 1: Preparar os dados (Exatamente como antes) ---
+        // 1. Criar a "Tarefa" (o recibo)
+        ImportTask task = new ImportTask();
+        task.setTotalItems(dtoList.size());
+        task.setCurrentLog("Tarefa enfileirada, aguardando início...");
+        ImportTask savedTask = importTaskRepository.save(task);
 
-        List<String> textsToEmbed = new ArrayList<>();
-        List<ContentChunk> chunksToSave = new ArrayList<>();
+        // 2. Chamar o serviço @Async (retorna imediatamente)
+        asyncImportService.processImport(savedTask.getId(), dtoList);
 
-        for (ChunkImportDTO dto : dtoList) {
-            Work work = workRepository.findByAcronym(dto.workAcronym())
-                    .orElseThrow(() -> new IllegalArgumentException("Acrônimo de Obra não encontrado: " + dto.workAcronym()));
-
-            Set<Topic> topics = new HashSet<>();
-            if (dto.topics() != null && !dto.topics().isEmpty()) {
-                topics = topicRepository.findByNameIn(dto.topics());
-            }
-
-            String textToEmbed = buildTextToEmbed(dto);
-            textsToEmbed.add(textToEmbed);
-
-            ContentChunk chunk = new ContentChunk();
-            chunk.setWork(work);
-            chunk.setChapterTitle(dto.chapterTitle());
-            chunk.setChapterNumber(dto.chapterNumber());
-            chunk.setSectionTitle(dto.sectionTitle());
-            chunk.setSectionNumber(dto.sectionNumber());
-            chunk.setSubsectionTitle(dto.subsectionTitle());
-            chunk.setSubSubsectionTitle(dto.subSubsectionTitle());
-            chunk.setQuestion(dto.question());
-            chunk.setContent(dto.content());
-            chunk.setTopics(topics);
-
-            chunksToSave.add(chunk);
-        }
-
-        // --- ETAPA 2: Vetorização em Lotes (A MUDANÇA ESTÁ AQUI) ---
-
-        int totalChunks = chunksToSave.size();
-
-        // Iterar sobre a lista em "lotes" de EMBEDDING_BATCH_SIZE
-        for (int i = 0; i < totalChunks; i += EMBEDDING_BATCH_SIZE) {
-            int end = Math.min(i + EMBEDDING_BATCH_SIZE, totalChunks);
-
-            // 1. Pegar o sub-lote de textos e chunks
-            List<String> textBatch = textsToEmbed.subList(i, end);
-            List<ContentChunk> chunkBatch = chunksToSave.subList(i, end);
-
-            logger.info("Processando lote de embedding {}/{} ({} chunks)",
-                    (i / EMBEDDING_BATCH_SIZE) + 1,
-                    (int) Math.ceil((double) totalChunks / EMBEDDING_BATCH_SIZE),
-                    textBatch.size());
-
-            // 2. Fazer a chamada de API para o LOTE MENOR
-            List<PGvector> vectorBatch = geminiApiClient.generateEmbeddingsInBatch(textBatch);
-
-            if (vectorBatch.size() != chunkBatch.size()) {
-                throw new RuntimeException("Erro na vetorização: o número de vetores (" + vectorBatch.size() + ") " +
-                        "não corresponde ao número de chunks (" + chunkBatch.size() + ")");
-            }
-
-            // 3. "Costurar" os vetores de volta nos chunks (rápido, em memória)
-            for (int j = 0; j < chunkBatch.size(); j++) {
-                ContentChunk chunk = chunkBatch.get(j);
-                PGvector vector = vectorBatch.get(j);
-                chunk.setContentVector(vector != null ? vector.toArray() : null);
-            }
-        }
-
-        // --- ETAPA 3: Salvar ---
-
-        logger.info("Vetorização concluída. Salvando {} chunks no banco de dados...", totalChunks);
-
-        // Salva TODOS os chunks (que agora têm vetores) no banco de dados
-        contentChunkRepository.saveAll(chunksToSave);
-
-        return "Importação otimizada concluída. " + totalChunks + " chunks processados e salvos.";
+        // 3. Retornar o DTO da tarefa para o controller
+        return new ImportTaskDTO(savedTask);
     }
 
+    // 5. ADICIONE O MÉTODO "GET STATUS"
+    @Transactional(readOnly = true)
+    public ImportTaskDTO getTaskStatus(Long taskId) {
+        ImportTask task = importTaskRepository.findById(taskId)
+                .orElseThrow(() -> new EntityNotFoundException("Tarefa não encontrada: " + taskId));
+        return new ImportTaskDTO(task);
+    }
 }
+
