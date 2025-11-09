@@ -198,10 +198,23 @@ public class ContentAdminService {
      * ======================================================
      */
     @Transactional(readOnly = true)
-    public Page<ChunkResponseDTO> findChunksByWork(Long workId, Pageable pageable) {
+    public Page<ChunkResponseDTO> findChunksByWork(Long workId, Pageable pageable, String search) { // <-- 1. NOVO PARÂMETRO
 
-        // PASSO 1: Busca a página de projeções (rápido e seguro, sem vetor)
-        Page<ChunkProjection> projectionPage = contentChunkRepository.findByWorkIdProjection(workId, pageable);
+        Page<ChunkProjection> projectionPage;
+
+        // --- A NOVA LÓGICA DE DECISÃO ---
+        if (search != null && !search.isBlank()) {
+            // Se tem busca, chama o novo método de busca
+            projectionPage = contentChunkRepository.searchByWorkIdProjection(workId, search, pageable);
+        } else {
+            // Se não tem busca, chama o método que você já usa
+            projectionPage = contentChunkRepository.findByWorkIdProjection(workId, pageable);
+        }
+        // --- FIM DA NOVA LÓGICA ---
+
+
+        // O RESTO DO SEU MÉTODO (PASSOS 2-6) PERMANECE IDÊNTICO:
+        // Nós apenas mudamos *qual* 'projectionPage' ele vai usar.
 
         // PASSO 2: Pega os IDs dos chunks desta página
         List<Long> chunkIds = projectionPage.getContent().stream()
@@ -216,7 +229,6 @@ public class ContentAdminService {
         List<ChunkTopicProjection> topicRelations = contentChunkRepository.findTopicsForChunkIds(chunkIds);
 
         // PASSO 4: Agrupa os tópicos por ChunkID
-        // (Map<ID_DO_CHUNK, Set<TopicDTO>>)
         Map<Long, Set<TopicDTO>> topicsByChunkId = topicRelations.stream()
                 .collect(Collectors.groupingBy(
                         ChunkTopicProjection::chunkId,
@@ -229,10 +241,7 @@ public class ContentAdminService {
         // PASSO 5: "Costura" os dados
         List<ChunkResponseDTO> responseDTOs = projectionPage.getContent().stream()
                 .map(projection -> {
-                    // Pega o Set de tópicos para este chunk (ou um Set vazio)
                     Set<TopicDTO> topics = topicsByChunkId.getOrDefault(projection.id(), new HashSet<>());
-
-                    // Constrói o DTO final usando nosso novo construtor
                     return new ChunkResponseDTO(projection, topics);
                 })
                 .collect(Collectors.toList());
@@ -455,11 +464,21 @@ public class ContentAdminService {
     public void bulkAddTopics(BulkTopicDTO dto) {
         if (dto == null || dto.chunkIds() == null || dto.topicIds() == null ||
                 dto.chunkIds().isEmpty() || dto.topicIds().isEmpty()) {
+            logger.warn("Tentativa de bulkAddTopics com DTO inválido.");
             return;
         }
 
-        // 3. Chama o novo método do repositório
-        contentChunkRepository.bulkAddTopicsToChunks(dto.chunkIds(), dto.topicIds());
+        logger.info("Executando bulk add topics: {} chunks, {} tópicos.", dto.chunkIds().size(), dto.topicIds().size());
+
+        // --- A CORREÇÃO ESTÁ AQUI ---
+        // Convertemos as Listas em Arrays nativos Java.
+        // O driver JDBC saberá como converter Long[] para um array SQL (bigint[]).
+        Long[] chunkIdsArray = dto.chunkIds().toArray(new Long[0]);
+        Long[] topicIdsArray = dto.topicIds().toArray(new Long[0]);
+        // --- FIM DA CORREÇÃO ---
+
+        // 3. Chama o novo método do repositório com os arrays
+        contentChunkRepository.bulkAddTopicsToChunks(chunkIdsArray, topicIdsArray);
     }
 }
 

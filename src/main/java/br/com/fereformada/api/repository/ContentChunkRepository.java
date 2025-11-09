@@ -170,15 +170,34 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
 
     @Modifying
     @Query(value = """
-            INSERT INTO chunk_topics (chunk_id, topic_id)
-            SELECT
-                c_id AS chunk_id,
-                t_id AS topic_id
-            FROM
-                unnest(?1) AS c_id
-            CROSS JOIN
-                unnest(?2) AS t_id
-            ON CONFLICT (chunk_id, topic_id) DO NOTHING
-            """, nativeQuery = true)
-    void bulkAddTopicsToChunks(List<Long> chunkIds, List<Long> topicIds);
+        INSERT INTO chunk_topics (chunk_id, topic_id)
+        SELECT
+            c_id AS chunk_id,
+            t_id AS topic_id
+        FROM
+            unnest(?1) AS c_id  -- <-- CAST REMOVIDO
+        CROSS JOIN
+            unnest(?2) AS t_id  -- <-- CAST REMOVIDO
+        ON CONFLICT (chunk_id, topic_id) DO NOTHING
+        """, nativeQuery = true)
+    void bulkAddTopicsToChunks(Long[] chunkIds, Long[] topicIds); // <-- TIPO ALTERADO
+
+
+    @Query("SELECT new br.com.fereformada.api.dto.ChunkProjection(" +
+            "  c.id, c.content, c.question, c.sectionTitle, c.chapterTitle, " +
+            "  c.chapterNumber, c.sectionNumber, c.subsectionTitle, " +
+            "  c.subSubsectionTitle, c.work.id, c.work.title " +
+            ") " +
+            "FROM ContentChunk c " +
+            "WHERE c.work.id = :workId " +
+            "AND ( " +
+            "   LOWER(c.question) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
+            "   LOWER(c.content) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
+            "   LOWER(c.chapterTitle) LIKE LOWER(CONCAT('%', :search, '%')) OR " +
+            "   LOWER(c.sectionTitle) LIKE LOWER(CONCAT('%', :search, '%')) " +
+            ")")
+    Page<ChunkProjection> searchByWorkIdProjection(
+            @Param("workId") Long workId,
+            @Param("search") String search,
+            Pageable pageable);
 }

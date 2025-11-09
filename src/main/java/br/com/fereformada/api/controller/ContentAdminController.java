@@ -78,8 +78,18 @@ public class ContentAdminController {
     // ESTE É O MÉTODO QUE ESTAVA FALTANDO (PROVAVELMENTE)
     // ======================================================
     @GetMapping("/works/{workId}/chunks")
-    public ResponseEntity<Page<ChunkResponseDTO>> getChunksForWork(@PathVariable Long workId, Pageable pageable) {
-        return ResponseEntity.ok(adminService.findChunksByWork(workId, pageable));
+    @PreAuthorize("hasRole('MODERATOR') or hasRole('ADMIN')")
+    public ResponseEntity<Page<ChunkResponseDTO>> getChunksForWork(
+            @PathVariable Long workId,
+            Pageable pageable, // <-- Isto já cuida da página E da classificação
+            @RequestParam(required = false) String search // <-- 1. NOSSO NOVO PARÂMETRO
+    ) {
+        Page<ChunkResponseDTO> page = adminService.findChunksByWork(
+                workId,
+                pageable,
+                search // <-- 2. Passamos para o serviço
+        );
+        return ResponseEntity.ok(page);
     }
 
     @PostMapping("/works/{workId}/chunks")
