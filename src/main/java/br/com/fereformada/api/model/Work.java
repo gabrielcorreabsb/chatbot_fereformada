@@ -41,6 +41,9 @@ public class Work {
     @Column(nullable = false)
     private String type; // Ex: "LIVRO", "CONFISSAO"
 
+    @Column(name = "boost_priority")
+    private Integer boostPriority;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "author_id", nullable = false)
     @JsonManagedReference

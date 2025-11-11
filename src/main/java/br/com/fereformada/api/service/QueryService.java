@@ -47,8 +47,8 @@ public class QueryService {
 
     // ===== SINÔNIMOS TEOLÓGICOS =====
     private static final Map<String, List<String>> THEOLOGICAL_SYNONYMS = Map.ofEntries(
-            Map.entry("salvação", List.of("redenção", "justificação", "soteriologia", "regeneração")),
-            Map.entry("pecado", List.of("transgressão", "iniquidade", "queda", "depravação", "mal")),
+            Map.entry("salvação", java.util.List.of("redenção", "justificação", "soteriologia", "regeneração")),
+            Map.entry("pecado", java.util.List.of("transgressão", "iniquidade", "queda", "depravação", "mal")),
             Map.entry("deus", List.of("senhor", "criador", "pai", "soberano", "yahweh", "jeová")),
             Map.entry("fé", List.of("crença", "confiança", "fidelidade", "crer")),
             Map.entry("graça", List.of("favor", "misericórdia", "benevolência", "bondade")),
@@ -474,89 +474,98 @@ public class QueryService {
     }
 
     private ContextItem applySmartBoosts(ContextItem item, String question) {
-        // 👇 LOG DO SCORE ORIGINAL 👇
+
         logger.debug("  Boosting item: '{}' (Score Original: {})",
                 item.source(),
                 String.format("%.3f", item.similarityScore()));
 
-        double finalScore = item.similarityScore(); // Começa com o score original
-        double additiveBoost = 0.0; // Usaremos adição para boosts secundários
-
-        String source = item.source().toLowerCase();
+        double finalScore = item.similarityScore();
+        double additiveBoost = 0.0; // Boosts secundários
         String questionLower = question.toLowerCase();
-        String content = item.content().toLowerCase();
 
-        // --- Boosts Principais (Multiplicativos, mas com cuidado) ---
+        // --- 1. LÓGICA DE BOOST PRINCIPAL (Refatorada) ---
 
-        // SUPER-BOOST para documento citado diretamente (MANTÉM MULTIPLICATIVO ALTO)
-        if ((questionLower.contains("catecismo") && source.contains("catecismo")) ||
-                (questionLower.contains("confissão") && source.contains("confissão de fé")) ||
-                (questionLower.contains("institutas") && source.contains("institutas")) ||
-                ((questionLower.contains("teologia sistemática") || questionLower.contains("berkhof")) && source.contains("teologia sistemática"))) {
-            finalScore *= 1.5; // Reduzido de 2.0 para 1.5 (Boost de 50%)
-            logger.debug("    -> SUPER BOOST aplicado");
-        }
-        // BOOST PRIORITÁRIO para ESCRITURA (MANTÉM MULTIPLICATIVO)
-        else if (source.contains("bíblia de genebra")) {
-            finalScore *= 1.2; // Reduzido de 1.4 para 1.2 (Boost de 20%)
-            logger.debug("    -> BOOST Bíblia aplicado");
+        // (Opção 1 que discutimos)
+        if (item.isBiblicalNote()) {
+            // É uma Nota de Estudo (Bíblia), aplicar boost máximo fixo.
+            finalScore *= 1.30; // Boost de 30%
+            logger.debug("    -> BOOST Bíblia (Fixo) aplicado");
 
-            // Boost ADITIVO se contém referência
-            if (content.matches(".*\\d+[:\\.]\\d+.*")) {
-                additiveBoost += 0.1; // Adiciona 0.1
-                logger.debug("    -> ADD Boost Ref. Direta");
+            // --- COMENTÁRIO PARA IMPLEMENTAÇÃO FUTURA (Como solicitado) ---
+            // Se um dia você quiser que as Notas de Estudo tenham prioridades dinâmicas:
+            // 1. Adicione 'boost_priority' na tabela 'study_notes'.
+            // 2. Adicione o dropdown no 'StudyNoteFormModal.jsx'.
+            // 3. Modifique o 'ContextItem.from(StudyNote...)' para carregar 'note.getBoostPriority()'.
+            // 4. Substitua o boost fixo (1.30) pela lógica de 'switch' abaixo,
+            //    lendo o 'item.boostPriority()'.
+            // --- FIM DO COMENTÁRIO ---
+
+        } else {
+            // (Opção 2) É um ContentChunk (Obra), ler a prioridade do banco.
+            Integer priority = item.boostPriority(); // Lê o valor (ex: 2)
+
+            if (priority != null) {
+                switch (priority) {
+                    case 3: // 3 = Nível Bíblia (se você definir)
+                        finalScore *= 1.30;
+                        logger.debug("    -> BOOST Dinâmico (Nível 3) aplicado");
+                        break;
+                    case 2: // 2 = Essencial (CFW, Catecismos)
+                        finalScore *= 1.20; // Boost de 20%
+                        logger.debug("    -> BOOST Dinâmico (Nível 2) aplicado");
+                        break;
+                    case 1: // 1 = Prioritário (Institutas, Teologia)
+                        finalScore *= 1.10; // Boost de 10%
+                        logger.debug("    -> BOOST Dinâmico (Nível 1) aplicado");
+                        break;
+                    case 0: // 0 = Normal (Padrão)
+                    default:
+                        // Sem boost multiplicativo
+                        logger.debug("    -> BOOST Dinâmico (Nível 0) aplicado");
+                        break;
+                }
             }
-            // Boost ADITIVO se pergunta doutrinária
-            if (isDoctrinalQuestion(questionLower)) {
-                additiveBoost += 0.05; // Adiciona 0.05
-                logger.debug("    -> ADD Boost Doutrina");
+
+            // SUPER-BOOST ADICIONAL (Mantido, mas agora dinâmico)
+            // Se a *pergunta* cita o *tipo* da obra (ex: "catecismo")
+            String workType = item.workType(); // Lê o tipo (ex: "CATECISMO")
+            if (workType != null && !workType.isEmpty() &&
+                    questionLower.contains(workType.toLowerCase().split("_")[0])) { // "NOTAS_BIBLICAS" -> "notas"
+
+                finalScore *= 1.2; // Boost extra de 20% por citação de tipo
+                logger.debug("    -> SUPER BOOST (Tipo de Obra) aplicado");
             }
         }
-        // Boosts MULTIPLICATIVOS MENORES para documentos confessionais importantes
-        else if (source.contains("confissão de fé")) {
-            finalScore *= 1.1; // Boost de 10%
-            logger.debug("    -> BOOST Confissão aplicado");
-        } else if (source.contains("catecismo maior")) {
-            finalScore *= 1.08; // Boost de 8%
-            logger.debug("    -> BOOST C. Maior aplicado");
-        } else if (source.contains("breve catecismo")) {
-            finalScore *= 1.06; // Boost de 6%
-            logger.debug("    -> BOOST C. Breve aplicado");
-        } else if (source.contains("institutas") || source.contains("teologia sistemática")) {
-            finalScore *= 1.05; // Boost de 5% (já coberto pelo SUPER BOOST se citado)
-            logger.debug("    -> BOOST Institutas/TS aplicado");
-        }
 
-        // --- Boosts Secundários (ADITIVOS) ---
+        // --- 2. Boosts Secundários (ADITIVOS) (Lógica mantida do seu original) ---
 
         // Boost ADITIVO se tem estrutura pergunta/resposta
-        if (item.question() != null && !item.question().isEmpty()) {
-            additiveBoost += 0.03; // Adiciona 0.03
+        if (item.hasQuestion()) { // Usando o método helper do ContextItem
+            additiveBoost += 0.03;
             logger.debug("    -> ADD Boost P/R");
-            // Boost ADITIVO extra se a pergunta bate
             if (calculateSimilarity(item.question().toLowerCase(), questionLower) > 0.7) {
-                additiveBoost += 0.07; // Adiciona +0.07 (Total 0.1)
+                additiveBoost += 0.07;
                 logger.debug("    -> ADD Boost P/R Match");
             }
         }
 
         // Boost ADITIVO para conteúdo que cita referências bíblicas
         int biblicalReferences = countBiblicalReferences(item.content());
-        if (biblicalReferences > 1) { // A partir de 2 refs
-            additiveBoost += Math.min(biblicalReferences * 0.02, 0.1); // Adiciona 0.02 por ref, max 0.1
+        if (biblicalReferences > 1) {
+            additiveBoost += Math.min(biblicalReferences * 0.02, 0.1);
             logger.debug("    -> ADD Boost Refs Bíblicas ({})", biblicalReferences);
         }
 
-        // --- Penalidade (Multiplicativa) ---
+        // --- 3. Penalidade (Multiplicativa) (Lógica mantida do seu original) ---
         if (item.content().length() < 100) {
             finalScore *= 0.9; // Penalidade de 10%
             logger.debug("    -> PENALTY Conteúdo Curto");
         }
 
-        // --- Aplica Boost Aditivo e Garante Limites ---
+        // --- 4. Aplica Boost Aditivo e Garante Limites (Lógica mantida do seu original) ---
         finalScore += additiveBoost;
-        finalScore = Math.min(finalScore, 1.5); // COLOCA UM TETO MÁXIMO (ex: 1.5)
-        finalScore = Math.max(finalScore, 0.0); // Garante que não seja negativo
+        finalScore = Math.min(finalScore, 1.5); // TETO MÁXIMO
+        finalScore = Math.max(finalScore, 0.0); // Chão
 
         logger.debug("    -> Score Final: {}", String.format("%.3f", finalScore));
 
@@ -817,6 +826,7 @@ public class QueryService {
         List<ContextItem> items = new ArrayList<>();
         for (Object[] row : rawResults) {
             try {
+                // A sua lógica de busca da Work (já estava correta)
                 Work work = workRepository.findById(((Number) row[7]).longValue()).orElse(null);
                 if (work == null) continue;
 
@@ -828,19 +838,25 @@ public class QueryService {
                 chunk.setChapterTitle((String) row[4]);
                 chunk.setChapterNumber(row[5] != null ? ((Number) row[5]).intValue() : null);
                 chunk.setSectionNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
-                chunk.setWork(work);
+                chunk.setWork(work); // Seta a Work
 
-                // 👇 CORREÇÃO DOS ÍNDICES AQUI 👇
-                // Agora que a query foi corrigida, os índices mudaram:
-                chunk.setSubsectionTitle((String) row[8]);      // subsection_title está no índice 8
-                chunk.setSubSubsectionTitle((String) row[9]);   // sub_subsection_title está no índice 9
+                chunk.setSubsectionTitle((String) row[8]);
+                chunk.setSubSubsectionTitle((String) row[9]);
 
-                // O score agora está no final, no índice 10
                 double score = ((Number) row[10]).doubleValue();
 
                 String contextualSource = buildContextualSource(chunk);
 
-                items.add(ContextItem.from(chunk, score, contextualSource));
+                // ======================================================
+                // MUDANÇA PRINCIPAL AQUI
+                // ======================================================
+                // Agora passamos o objeto 'work' completo para o 'from'.
+                // O ContextItem.java (corrigido) saberá como extrair
+                // o work.getType() e o work.getBoostPriority().
+                //
+                // ANTES: items.add(ContextItem.from(chunk, score, contextualSource));
+                items.add(ContextItem.from(chunk, score, contextualSource, work));
+                // ======================================================
 
             } catch (Exception e) {
                 logger.warn("Erro ao converter resultado raw de chunk: {}", e.getMessage(), e);
@@ -965,18 +981,23 @@ public class QueryService {
      */
     private List<ContextItem> ensureBalancedSources(List<ContextItem> allRankedResults) {
         // 1. Separar os resultados por tipo
+        // ======================================================
+        // MUDANÇA PRINCIPAL AQUI
+        // ======================================================
+        // Usamos a referência de método 'isBiblicalNote'
+        // ANTES: item.source().contains("Bíblia de Genebra")
         List<ContextItem> biblicalSources = allRankedResults.stream()
-                .filter(item -> item.source().contains("Bíblia de Genebra"))
+                .filter(ContextItem::isBiblicalNote) // <-- MUITO MAIS LIMPO E ROBUSTO
                 .collect(Collectors.toList());
 
         List<ContextItem> confessionalSources = allRankedResults.stream()
-                .filter(item -> !item.source().contains("Bíblia de Genebra"))
+                .filter(item -> !item.isBiblicalNote()) // <-- MUITO MAIS LIMPO E ROBUSTO
                 .collect(Collectors.toList());
+        // ======================================================
 
-        // 2. Montar a lista final balanceada
-        // Estratégia: 3 fontes bíblicas + 2 confessionais (se disponíveis)
+        // 2. Montar a lista final balanceada (Sua lógica original está ótima)
         List<ContextItem> balancedList = new ArrayList<>();
-        Set<String> addedKeys = new HashSet<>(); // Para evitar duplicatas
+        Set<String> addedKeys = new HashSet<>();
 
         // Adicionar as 3 melhores fontes bíblicas
         for (int i = 0; i < Math.min(3, biblicalSources.size()); i++) {
@@ -998,12 +1019,12 @@ public class QueryService {
             }
         }
 
-        // 3. Reordenar a lista final pelo score para manter a relevância
+        // 3. Reordenar a lista final pelo score
         balancedList.sort(Comparator.comparing(ContextItem::similarityScore).reversed());
 
         logger.info("⚖️ Fontes balanceadas: {} Bíblicas, {} Confessionais.",
-                (int) balancedList.stream().filter(i -> i.source().contains("Bíblia de Genebra")).count(),
-                (int) balancedList.stream().filter(i -> !i.source().contains("Bíblia de Genebra")).count());
+                (int) balancedList.stream().filter(ContextItem::isBiblicalNote).count(),
+                (int) balancedList.stream().filter(i -> !i.isBiblicalNote()).count());
 
         return balancedList;
     }
@@ -1013,13 +1034,13 @@ public class QueryService {
             List<ContextItem> vectorResults,
             List<ContextItem> ftsResults,
             String userQuestion) {
+
         Map<String, ContextItem> combined = new HashMap<>();
-        // Vector: peso 0.6
+        // ... (Sua lógica de combinar vectorResults e ftsResults) ...
         for (ContextItem item : vectorResults) {
             String key = generateItemKey(item);
             combined.put(key, item.withAdjustedScore(item.similarityScore() * 0.6));
         }
-        // FTS: peso 0.4
         for (ContextItem item : ftsResults) {
             String key = generateItemKey(item);
             if (combined.containsKey(key)) {
@@ -1032,16 +1053,16 @@ public class QueryService {
             }
         }
 
-        // Aplicar boosts Sola Scriptura
+        // 1. CHAMA O NOVO 'applySmartBoosts'
         List<ContextItem> allRankedResults = combined.values().stream()
-                .map(item -> applySmartBoosts(item, userQuestion))
+                .map(item -> applySmartBoosts(item, userQuestion)) // <-- Chamada 1 (Corrigida)
                 .sorted(Comparator.comparing(ContextItem::similarityScore).reversed())
                 .collect(Collectors.toList());
 
-        // ===== NOVA LÓGICA DE SELEÇÃO BALANCEADA =====
-        List<ContextItem> finalResults = ensureBalancedSources(allRankedResults);
+        // 2. CHAMA O NOVO 'ensureBalancedSources'
+        List<ContextItem> finalResults = ensureBalancedSources(allRankedResults); // <-- Chamada 2 (Corrigida)
 
-        // Log otimizado
+        // ... (Sua lógica de Logs) ...
         logger.info("🔍 Resultados da busca híbrida:");
         logger.info("  🧠 Vector: {} resultados", vectorResults.size());
         logger.info("  🔤 FTS: {} resultados", ftsResults.size());
@@ -1087,10 +1108,9 @@ public class QueryService {
     // ===== CONVERSORES FTS =====
     private List<ContextItem> convertFTSChunkResults(List<Object[]> results, Set<String> originalKeywords) {
         List<ContextItem> items = new ArrayList<>();
-
         for (Object[] row : results) {
             try {
-                // Mapear campos da query FTS
+                // ... (mapeamento de campos) ...
                 ContentChunk chunk = new ContentChunk();
                 chunk.setId(((Number) row[0]).longValue());
                 chunk.setContent((String) row[1]);
@@ -1100,20 +1120,16 @@ public class QueryService {
                 chunk.setChapterNumber(row[5] != null ? ((Number) row[5]).intValue() : null);
                 chunk.setSectionNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
 
-                // Buscar Work por ID
                 Long workId = ((Number) row[7]).longValue();
                 Work work = workRepository.findById(workId).orElse(null);
                 chunk.setWork(work);
 
-                // Usar FTS rank como score base
                 double ftsRank = ((Number) row[8]).doubleValue();
-
-                // Combinar com nosso score de keywords
                 double keywordScore = calculateEnhancedKeywordScore(chunk.getContent(), originalKeywords, "");
-
-                // Score final: 70% FTS + 30% keyword
                 double finalScore = (ftsRank * 0.7) + (keywordScore * 0.3);
 
+                // CORRETO: O 'from(chunk...)' corrigido irá ler
+                // 'work.getType()' e 'work.getBoostPriority()'
                 items.add(ContextItem.from(chunk, finalScore));
 
                 logger.debug("  📄 Chunk {}: FTS={}, Keyword={}, Final={}",

@@ -5,5 +5,6 @@ public record WorkDTO(
         String type, // Ex: "CATECISMO", "CONFISSAO", "LIVRO"
         String acronym, // Ex: "CM", "CFW"
         Integer publicationYear,
-        Long authorId // O ID do Autor (da tabela 'authors')
+        Long authorId, // O ID do Autor (da tabela 'authors')
+        Integer boostPriority
 ) {}

@@ -70,6 +70,7 @@ public class ContentAdminService {
         work.setType(dto.type());
         work.setPublicationYear(dto.publicationYear());
         work.setAuthor(author);
+        work.setBoostPriority(dto.boostPriority());
         Work newWork = workRepository.save(work);
         return new WorkResponseDTO(newWork);
     }
@@ -83,6 +84,7 @@ public class ContentAdminService {
         work.setType(dto.type());
         work.setPublicationYear(dto.publicationYear());
         work.setAuthor(author);
+        work.setBoostPriority(dto.boostPriority());
         Work updatedWork = workRepository.save(work);
         return new WorkResponseDTO(updatedWork);
     }

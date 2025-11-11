@@ -10,7 +10,8 @@ public record WorkResponseDTO(
         String type,
         Integer publicationYear,
         AuthorDTO author,
-        Long chunkCount
+        Long chunkCount,
+        Integer boostPriority
 ) {
     /**
      * Construtor de Mapeamento:
@@ -30,7 +31,8 @@ public record WorkResponseDTO(
                 // nós simplesmente passamos o objeto work.getAuthor()
                 // para o construtor do AuthorDTO que já criamos.
                 new AuthorDTO(work.getAuthor()),
-                work.getChunkCount()
+                work.getChunkCount(),
+                work.getBoostPriority()
                 // ======================================================
         );
     }
