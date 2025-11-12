@@ -18,39 +18,39 @@ public class QueryAnalyzer {
 
     // Prompt de sistema otimizado para o seu modelo de dados
     private static final String SYSTEM_PROMPT = """
-        Você é um assistente de análise de consulta para uma API de teologia reformada.
-        Seu trabalho é analisar a pergunta do usuário e extrair filtros estruturais com base nos metadados disponíveis.
-        Os metadados disponíveis são: 'obra_acronimo' (CFW, CM, BC, TSB, ICR), 'livro_biblico' (Jó, Romanos, etc.), 'capitulo', 'secao_ou_versiculo'.
-        
-         MAPEAMENTO DE REGRAS:
-        1.  'capitulo' é usado para livros da Bíblia (Jó 24) ou capítulos da CFW/Institutas (CFW 1).
-        2.  'secao_ou_versiculo' é usado para versículos da Bíblia (Jó 24:18), seções da CFW (CFW 1.4) ou NÚMEROS DE PERGUNTA de catecismos (CM 1, BC 1).
-        
-        Responda APENAS com um objeto JSON. Se nenhum filtro for encontrado, retorne um JSON vazio ({{}}).
-        Se a pergunta tiver contexto (ex: "e a seção 4?"), use o histórico.
-
-        Exemplos:
-        - Pergunta: O que diz na Confissão de Fé de Westminster no Capítulo 1?
-        - Resposta: {{"obra_acronimo": "CFW", "capitulo": 1}}
-        
-        - Pergunta: e a seção 4? (Histórico: ...falava da CFW cap 1)
-        - Resposta: {{"obra_acronimo": "CFW", "capitulo": 1, "secao_ou_versiculo": 4}}
-        
-        - Pergunta: O que diz em Jó 24:18?
-        - Resposta: {{"livro_biblico": "Jó", "capitulo": 24, "secao_ou_versiculo": 18}}
-        
-        - Pergunta: Qual o fim principal do homem? (Catecismo Maior)
-        - Resposta: {{"obra_acronimo": "CM", "secao_ou_versiculo": 1}}
-        
-        - Pergunta: O que diz o Catecismo Maior de Westminster, pergunta 1?
-        - Resposta: {{"obra_acronimo": "CM", "secao_ou_versiculo": 1}}
-        
-        - Pergunta: Breve Catecismo, pergunta 10
-        - Resposta: {{"obra_acronimo": "BC", "secao_ou_versiculo": 10}}
-        
-        - Pergunta: Qual a opinião de Calvino sobre a providência?
-        - Resposta: {{}}
-        """;
+            Você é um assistente de análise de consulta para uma API de teologia reformada.
+            Seu trabalho é analisar a pergunta do usuário e extrair filtros estruturais com base nos metadados disponíveis.
+            Os metadados disponíveis são: 'obra_acronimo' (CFW, CM, BC, TSB, ICR), 'livro_biblico' (Jó, Romanos, etc.), 'capitulo', 'secao_ou_versiculo'.
+            
+             MAPEAMENTO DE REGRAS:
+            1.  'capitulo' é usado para livros da Bíblia (Jó 24) ou capítulos da CFW/Institutas (CFW 1).
+            2.  'secao_ou_versiculo' é usado para versículos da Bíblia (Jó 24:18), seções da CFW (CFW 1.4) ou NÚMEROS DE PERGUNTA de catecismos (CM 1, BC 1).
+            
+            Responda APENAS com um objeto JSON. Se nenhum filtro for encontrado, retorne um JSON vazio ({{}}).
+            Se a pergunta tiver contexto (ex: "e a seção 4?"), use o histórico.
+            
+            Exemplos:
+            - Pergunta: O que diz na Confissão de Fé de Westminster no Capítulo 1?
+            - Resposta: {{"obra_acronimo": "CFW", "capitulo": 1}}
+            
+            - Pergunta: e a seção 4? (Histórico: ...falava da CFW cap 1)
+            - Resposta: {{"obra_acronimo": "CFW", "capitulo": 1, "secao_ou_versiculo": 4}}
+            
+            - Pergunta: O que diz em Jó 24:18?
+            - Resposta: {{"livro_biblico": "Jó", "capitulo": 24, "secao_ou_versiculo": 18}}
+            
+            - Pergunta: Qual o fim principal do homem? (Catecismo Maior)
+            - Resposta: {{"obra_acronimo": "CM", "secao_ou_versiculo": 1}}
+            
+            - Pergunta: O que diz o Catecismo Maior de Westminster, pergunta 1?
+            - Resposta: {{"obra_acronimo": "CM", "secao_ou_versiculo": 1}}
+            
+            - Pergunta: Breve Catecismo, pergunta 10
+            - Resposta: {{"obra_acronimo": "BC", "secao_ou_versiculo": 10}}
+            
+            - Pergunta: Qual a opinião de Calvino sobre a providência?
+            - Resposta: {{}}
+            """;
 
     public QueryAnalyzer(GeminiApiClient geminiClient, ObjectMapper objectMapper) {
         this.geminiClient = geminiClient;
@@ -59,7 +59,8 @@ public class QueryAnalyzer {
 
     /**
      * Analisa a pergunta do usuário e extrai filtros de metadados.
-     * @param userQuery A pergunta do usuário (ex: "O que diz na CFW Cap 1?")
+     *
+     * @param userQuery   A pergunta do usuário (ex: "O que diz na CFW Cap 1?")
      * @param chatHistory O histórico do chat (para contexto)
      * @return um objeto MetadataFilter preenchido.
      */
@@ -89,23 +90,30 @@ public class QueryAnalyzer {
     }
 
     private String cleanGeminiResponse(String response) {
-        if (response == null) return "{}";
-
-        // Remove cercas de código (```json ... ```)
-        String cleaned = response.trim();
-        if (cleaned.startsWith("```json")) {
-            cleaned = cleaned.substring(7); // remove ```json
-            if (cleaned.endsWith("```")) {
-                cleaned = cleaned.substring(0, cleaned.length() - 3); // remove ```
-            }
-        }
-
-        // Garante que é um JSON válido
-        if (!cleaned.startsWith("{") || !cleaned.endsWith("}")) {
-            logger.warn("Resposta do QueryAnalyzer não foi um JSON válido: {}", response);
+        if (response == null || response.isBlank()) {
             return "{}";
         }
 
-        return cleaned;
+        String cleaned = response.trim();
+
+        // Tenta encontrar o início do JSON
+        int jsonStart = cleaned.indexOf('{');
+        // Tenta encontrar o fim do JSON
+        int jsonEnd = cleaned.lastIndexOf('}');
+
+        // Se encontrou um '{' e um '}' válidos
+        if (jsonStart != -1 && jsonEnd != -1 && jsonEnd > jsonStart) {
+            // Extrai o JSON bruto
+            cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
+
+            // Verifica se é um JSON válido (safety check)
+            if (cleaned.startsWith("{") && cleaned.endsWith("}")) {
+                return cleaned;
+            }
+        }
+
+        // Se não encontrou, ou se o resultado é inválido, loga o aviso e retorna vazio
+        logger.warn("Resposta do QueryAnalyzer não foi um JSON válido ou não pôde ser limpa: {}", response);
+        return "{}";
     }
 }

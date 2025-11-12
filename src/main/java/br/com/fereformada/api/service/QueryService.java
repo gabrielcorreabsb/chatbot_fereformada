@@ -1,14 +1,8 @@
 package br.com.fereformada.api.service;
 
 import br.com.fereformada.api.dto.*;
-import br.com.fereformada.api.model.ContentChunk;
-import br.com.fereformada.api.model.StudyNote;
-import br.com.fereformada.api.model.Work;
-import br.com.fereformada.api.repository.ContentChunkRepository;
-import br.com.fereformada.api.repository.MensagemRepository;
-import br.com.fereformada.api.repository.StudyNoteRepository;
-import br.com.fereformada.api.repository.WorkRepository;
-import br.com.fereformada.api.model.Mensagem;
+import br.com.fereformada.api.model.*;
+import br.com.fereformada.api.repository.*;
 import br.com.fereformada.api.repository.MensagemRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pgvector.PGvector;
@@ -23,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import org.springframework.cache.annotation.Cacheable;
 
 @Service
 public class QueryService {
@@ -45,23 +41,6 @@ public class QueryService {
             "ter", "haver", "fazer", "ir", "vir", "ver", "dar", "poder"
     );
 
-    // ===== SINÔNIMOS TEOLÓGICOS =====
-    private static final Map<String, List<String>> THEOLOGICAL_SYNONYMS = Map.ofEntries(
-            Map.entry("salvação", java.util.List.of("redenção", "justificação", "soteriologia", "regeneração")),
-            Map.entry("pecado", java.util.List.of("transgressão", "iniquidade", "queda", "depravação", "mal")),
-            Map.entry("deus", List.of("senhor", "criador", "pai", "soberano", "yahweh", "jeová")),
-            Map.entry("fé", List.of("crença", "confiança", "fidelidade", "crer")),
-            Map.entry("graça", List.of("favor", "misericórdia", "benevolência", "bondade")),
-            Map.entry("eleição", List.of("predestinação", "escolha", "chamado", "eleitos")),
-            Map.entry("igreja", List.of("congregação", "assembleia", "corpo", "noiva")),
-            Map.entry("escritura", List.of("bíblia", "palavra", "sagradas", "escrituras")),
-            Map.entry("batismo", List.of("batizar", "sacramento", "imersão", "aspersão")),
-            Map.entry("ceia", List.of("comunhão", "eucaristia", "santa", "sacramento")),
-            Map.entry("oração", List.of("orar", "súplica", "intercessão", "petição")),
-            Map.entry("santificação", List.of("santidade", "purificação", "consagração")),
-            Map.entry("justificação", List.of("justificar", "declarar", "justo", "imputação")),
-            Map.entry("cristo", List.of("jesus", "messias", "salvador", "redentor", "cordeiro"))
-    );
 
     private final ContentChunkRepository contentChunkRepository;
     private final StudyNoteRepository studyNoteRepository;
@@ -70,11 +49,19 @@ public class QueryService {
     private final MensagemRepository mensagemRepository;
     private final QueryAnalyzer queryAnalyzer;
     private final ObjectMapper objectMapper;
+    private final TheologicalSynonymRepository synonymRepository;
+    private final Pattern confessionalPattern;
+    private final Map<Integer, String> regexGroupToAcronymMap;
 
     public QueryService(ContentChunkRepository contentChunkRepository,
                         StudyNoteRepository studyNoteRepository,
-                        WorkRepository workRepository,
-                        GeminiApiClient geminiApiClient, MensagemRepository mensagemRepository, QueryAnalyzer queryAnalyzer, ObjectMapper objectMapper) {
+                        WorkRepository workRepository, // Já está injetado
+                        GeminiApiClient geminiApiClient,
+                        MensagemRepository mensagemRepository,
+                        QueryAnalyzer queryAnalyzer,
+                        ObjectMapper objectMapper,
+                        TheologicalSynonymRepository synonymRepository) {
+
         this.contentChunkRepository = contentChunkRepository;
         this.studyNoteRepository = studyNoteRepository;
         this.workRepository = workRepository;
@@ -82,6 +69,47 @@ public class QueryService {
         this.mensagemRepository = mensagemRepository;
         this.queryAnalyzer = queryAnalyzer;
         this.objectMapper = objectMapper;
+        this.synonymRepository = synonymRepository;
+
+        // INÍCIO DA LÓGICA DE CONSTRUÇÃO DO REGEX DINÂMICO
+        List<Work> allWorks = workRepository.findAll();
+        StringBuilder regexBuilder = new StringBuilder("\\b(?:");
+        this.regexGroupToAcronymMap = new HashMap<>();
+        int groupIndex = 1; // O índice do grupo de captura do Regex começa em 1
+
+        for (Work work : allWorks) {
+            if (work.getAcronym() == null || work.getAcronym().isBlank()) continue;
+
+            String acronym = work.getAcronym();
+
+            // --- A LÓGICA DE TÍTULO "HARDCODED" FOI REMOVIDA (Conforme sua solicitação) ---
+            String regexFragment = Pattern.quote(acronym); // Ex: "CFW", "HC", "TSB"
+
+            if (groupIndex > 1) {
+                regexBuilder.append("|");
+            }
+
+            // O grupo de captura é *apenas* o acrónimo
+            regexBuilder.append("(").append(regexFragment).append(")");
+
+            // Mapeia o índice do grupo (1, 2, 3...) ao acrónimo ("CFW", "CM", "HC"...)
+            this.regexGroupToAcronymMap.put(groupIndex, acronym);
+            groupIndex++;
+        }
+
+        regexBuilder.append(")\\b"); // Fim dos grupos de obras
+        regexBuilder.append("[\\s,]*"); // Separador
+        regexBuilder.append("(?:pergunta|capitulo|cap\\.?|p\\.?\\s*)?"); // Palavra-chave opcional
+
+        // Adiciona os grupos de captura para capítulo e seção
+        regexBuilder.append("(\\d+)"); // Grupo N+1 (Capítulo)
+        regexBuilder.append("(?:[:.](\\d+))?"); // Grupo N+2 (Seção)
+
+        this.confessionalPattern = Pattern.compile(regexBuilder.toString(), Pattern.CASE_INSENSITIVE);
+
+        logger.info("Regex de busca direta 100% dinâmico construído com {} obras.", this.regexGroupToAcronymMap.size());
+        // FIM DA LÓGICA DE CONSTRUÇÃO DO REGEX
+
     }
 
 
@@ -265,98 +293,21 @@ public class QueryService {
                 mentionsBiblicalBooks || hasSpecificNames || isShortQuery;
     }
 
-    private List<ContextItem> performKeywordSearch(String question) {
-        Set<String> keywords = extractImportantKeywords(question);
-
-        if (keywords.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        List<ContextItem> results = new ArrayList<>();
-
-        try {
-            List<String> topKeywords = keywords.stream()
-                    .filter(k -> k.length() > 3)
-                    .filter(k -> !STOP_WORDS.contains(k))
-                    .sorted(Comparator.comparingInt(String::length).reversed())
-                    .limit(5)
-                    .collect(Collectors.toList());
-
-            if (topKeywords.isEmpty()) {
-                logger.debug("Nenhuma keyword válida encontrada");
-                return Collections.emptyList();
-            }
-
-            logger.debug("🔍 Buscando por {} keywords: {}", topKeywords.size(), topKeywords);
-
-            Pageable limit3 = PageRequest.of(0, 3);
-            Set<Long> processedChunkIds = new HashSet<>();
-            Set<Long> processedNoteIds = new HashSet<>();
-
-            for (String keyword : topKeywords) {
-                try {
-                    logger.debug("  → Buscando por: '{}'", keyword);
-
-                    // ✅ NOVO: Try-catch individual para cada keyword
-                    try {
-                        List<ContentChunk> chunks = contentChunkRepository.searchByKeywords(keyword, limit3);
-                        for (ContentChunk chunk : chunks) {
-                            if (!processedChunkIds.contains(chunk.getId())) {
-                                double score = calculateEnhancedKeywordScore(chunk.getContent(), keywords, keyword);
-                                results.add(ContextItem.from(chunk, score));
-                                processedChunkIds.add(chunk.getId());
-                            }
-                        }
-                    } catch (Exception chunkError) {
-                        logger.warn("  ⚠️ Erro ao buscar chunks para '{}': {}", keyword, chunkError.getMessage());
-                    }
-
-                    try {
-                        List<StudyNote> notes = studyNoteRepository.searchByKeywords(keyword, limit3);
-                        for (StudyNote note : notes) {
-                            if (!processedNoteIds.contains(note.getId())) {
-                                double score = calculateEnhancedKeywordScore(note.getNoteContent(), keywords, keyword);
-                                results.add(ContextItem.from(note, score));
-                                processedNoteIds.add(note.getId());
-                            }
-                        }
-                    } catch (Exception noteError) {
-                        logger.warn("  ⚠️ Erro ao buscar notas para '{}': {}", keyword, noteError.getMessage());
-                    }
-
-                } catch (Exception keywordError) {
-                    logger.warn("  ❌ Erro geral para keyword '{}': {}", keyword, keywordError.getMessage());
-                    continue; // Continua com próxima keyword
-                }
-            }
-
-            logger.debug("✅ Keyword search encontrou {} itens únicos", results.size());
-
-        } catch (Exception e) {
-            logger.warn("❌ Erro na busca por keywords (usando apenas busca vetorial): {}", e.getMessage());
-            // Retorna lista vazia - sistema continua só com busca vetorial
-            return Collections.emptyList();
-        }
-
-        return results;
-    }
-
-    private Set<String> extractImportantKeywords(String question) {
+    private Set<String> extractImportantKeywords(String question, Map<String, List<String>> synonymMap) {
         Set<String> keywords = new HashSet<>();
         String[] words = question.toLowerCase()
                 .replaceAll("[?!.,;:]", "")
                 .split("\\s+");
 
-        // 1. Adicionar palavras principais
+        // O mapa agora vem como parâmetro
+        // Map<String, List<String>> synonymMap = getSynonymMap(); // <-- LINHA REMOVIDA
+
         for (String word : words) {
-            // Pular stop words e palavras muito curtas
             if (word.length() > 2 && !STOP_WORDS.contains(word)) {
                 keywords.add(word);
 
-                // 2. Adicionar sinônimos teológicos se aplicável
-                if (THEOLOGICAL_SYNONYMS.containsKey(word)) {
-                    List<String> synonyms = THEOLOGICAL_SYNONYMS.get(word);
-                    // Adicionar apenas os 3 sinônimos mais importantes
+                if (synonymMap.containsKey(word)) { // Usa o mapa do parâmetro
+                    List<String> synonyms = synonymMap.get(word);
                     keywords.addAll(synonyms.stream().limit(3).collect(Collectors.toList()));
                 }
             }
@@ -826,7 +777,6 @@ public class QueryService {
         List<ContextItem> items = new ArrayList<>();
         for (Object[] row : rawResults) {
             try {
-                // A sua lógica de busca da Work (já estava correta)
                 Work work = workRepository.findById(((Number) row[7]).longValue()).orElse(null);
                 if (work == null) continue;
 
@@ -839,24 +789,16 @@ public class QueryService {
                 chunk.setChapterNumber(row[5] != null ? ((Number) row[5]).intValue() : null);
                 chunk.setSectionNumber(row[6] != null ? ((Number) row[6]).intValue() : null);
                 chunk.setWork(work); // Seta a Work
-
                 chunk.setSubsectionTitle((String) row[8]);
                 chunk.setSubSubsectionTitle((String) row[9]);
 
                 double score = ((Number) row[10]).doubleValue();
-
                 String contextualSource = buildContextualSource(chunk);
 
-                // ======================================================
-                // MUDANÇA PRINCIPAL AQUI
-                // ======================================================
-                // Agora passamos o objeto 'work' completo para o 'from'.
-                // O ContextItem.java (corrigido) saberá como extrair
-                // o work.getType() e o work.getBoostPriority().
-                //
-                // ANTES: items.add(ContextItem.from(chunk, score, contextualSource));
+
+                // Passamos o objeto 'work' para que o ContextItem
+                // possa ler o .getBoostPriority() e .getType()
                 items.add(ContextItem.from(chunk, score, contextualSource, work));
-                // ======================================================
 
             } catch (Exception e) {
                 logger.warn("Erro ao converter resultado raw de chunk: {}", e.getMessage(), e);
@@ -1110,7 +1052,6 @@ public class QueryService {
         List<ContextItem> items = new ArrayList<>();
         for (Object[] row : results) {
             try {
-                // ... (mapeamento de campos) ...
                 ContentChunk chunk = new ContentChunk();
                 chunk.setId(((Number) row[0]).longValue());
                 chunk.setContent((String) row[1]);
@@ -1122,15 +1063,21 @@ public class QueryService {
 
                 Long workId = ((Number) row[7]).longValue();
                 Work work = workRepository.findById(workId).orElse(null);
-                chunk.setWork(work);
+
+                if (work == null) {
+                    logger.warn("Work não encontrada para ID: {} no FTS", workId);
+                    continue;
+                }
+                chunk.setWork(work); // Seta a Work
 
                 double ftsRank = ((Number) row[8]).doubleValue();
                 double keywordScore = calculateEnhancedKeywordScore(chunk.getContent(), originalKeywords, "");
                 double finalScore = (ftsRank * 0.7) + (keywordScore * 0.3);
 
-                // CORRETO: O 'from(chunk...)' corrigido irá ler
-                // 'work.getType()' e 'work.getBoostPriority()'
-                items.add(ContextItem.from(chunk, finalScore));
+
+                // Passamos o objeto 'work' para que o ContextItem
+                // possa ler o .getBoostPriority() e .getType()
+                items.add(ContextItem.from(chunk, finalScore, buildContextualSource(chunk), work));
 
                 logger.debug("  📄 Chunk {}: FTS={}, Keyword={}, Final={}",
                         chunk.getId(),
@@ -1143,7 +1090,6 @@ public class QueryService {
                 logger.warn("❌ Erro ao converter resultado FTS chunk: {}", e.getMessage());
             }
         }
-
         return items;
     }
 
@@ -1275,14 +1221,16 @@ public class QueryService {
     }
 
     private List<ContextItem> performKeywordSearchFTS(String question, MetadataFilter filter) {
-        Set<String> keywords = extractImportantKeywords(question);
+
+        Map<String, List<String>> synonymMap = getSynonymMap();
+
+        Set<String> keywords = extractImportantKeywords(question, synonymMap); // Passa o mapa
 
         if (keywords.isEmpty()) {
             return Collections.emptyList();
         }
 
-        // Construir query FTS flexível
-        String tsquery = buildIntelligentFTSQuery(keywords, question);
+        String tsquery = buildIntelligentFTSQuery(keywords, question, synonymMap); // Passa o mapa
 
         if (tsquery.isEmpty()) {
             logger.debug("❌ Não foi possível construir query FTS");
@@ -1357,7 +1305,7 @@ public class QueryService {
         return results;
     }
 
-    private String buildIntelligentFTSQuery(Set<String> keywords, String originalQuestion) {
+    private String buildIntelligentFTSQuery(Set<String> keywords, String originalQuestion, Map<String, List<String>> synonymMap) {
         List<String> validKeywords = keywords.stream()
                 .filter(k -> k.length() > 2)
                 .filter(k -> !STOP_WORDS.contains(k))
@@ -1368,43 +1316,17 @@ public class QueryService {
             return "";
         }
 
-        // ✅ ESTRATÉGIA: Sempre usar OR para máxima cobertura
         List<String> searchTerms = new ArrayList<>();
+
+        // O mapa agora vem como parâmetro
+        // Map<String, List<String>> synonymMap = getSynonymMap(); // <-- LINHA REMOVIDA
 
         for (String keyword : validKeywords.stream().limit(5).collect(Collectors.toList())) {
             searchTerms.add(keyword);
 
-            // Adicionar variações para termos importantes
-            switch (keyword.toLowerCase()) {
-                case "bíblia":
-                    searchTerms.add("escritura");
-                    searchTerms.add("palavra");
-                    break;
-                case "batismo":
-                    searchTerms.add("batizar");
-                    searchTerms.add("batismal");
-                    break;
-                case "infantil":
-                    searchTerms.add("criança");
-                    searchTerms.add("bebê");
-                    searchTerms.add("infante");
-                    break;
-                case "salvação":
-                    searchTerms.add("redenção");
-                    searchTerms.add("justificação");
-                    break;
-                case "graça":
-                    searchTerms.add("favor");
-                    searchTerms.add("misericórdia");
-                    break;
-                case "fé":
-                    searchTerms.add("crença");
-                    searchTerms.add("confiança");
-                    break;
-                case "pecado":
-                    searchTerms.add("transgressão");
-                    searchTerms.add("iniquidade");
-                    break;
+            if (synonymMap.containsKey(keyword.toLowerCase())) { // Usa o mapa do parâmetro
+                List<String> synonyms = synonymMap.get(keyword.toLowerCase());
+                searchTerms.addAll(synonyms);
             }
         }
 
@@ -1419,29 +1341,11 @@ public class QueryService {
     }
 
     private Optional<QueryServiceResult> handleDirectReferenceQuery(String userQuestion) {
-        // Padrão 1: Confissões - VERSÃO MELHORADA E FLEXÍVEL
-        Pattern confessionalPattern = Pattern.compile(
-                // Grupo 1: Nome completo ou acrônimo
-                "\\b(?:(CFW|Confiss.o(?: de F.)? de Westminster)|" +
-                        "(CM|Catecismo Maior(?: de Westminster)?)|" +
-                        "(BC|Breve Catecismo(?: de Westminster)?)|" +
-                        "(TSB|Teologia Sistem.tica)|" +
-                        "(ICR|Institutas))\\b" +
 
-                        // Separador opcional (vírgula, espaço, "pergunta", "capítulo")
-                        "[\\s,]*" +
-                        "(?:pergunta|capitulo|cap\\.?|p\\.?\\s*)?" +
+        // --- MUDANÇA 1: O PATTERN VEM DA VARIÁVEL DA CLASSE ---
+        Matcher confessionalMatcher = this.confessionalPattern.matcher(userQuestion);
 
-                        // Grupo 2: Número do capítulo ou pergunta
-                        "(\\d+)" +
-
-                        // Grupo 3: Número da seção (opcional)
-                        "(?:[:.](\\d+))?",
-                Pattern.CASE_INSENSITIVE
-        );
-        Matcher confessionalMatcher = confessionalPattern.matcher(userQuestion);
-
-        // Padrão 2: Bíblia (seu padrão bíblico está bom, mantemos igual)
+        // O padrão da Bíblia (Bloco 2) pode continuar estático
         Pattern biblicalPattern = Pattern.compile(
                 "(?:\\b(BG|Bíblia de Genebra)\\s*-?\\s*)?" +
                         "((?:\\d+\\s+)?[A-Za-zÀ-ÿ]+(?:\\s+[A-Za-zÀ-ÿ]+)*)" +
@@ -1454,25 +1358,33 @@ public class QueryService {
 
         // --- BLOCO 1: Busca Confessional (LÓGICA ATUALIZADA) ---
         if (confessionalMatcher.find()) {
-            // Mapear o que foi encontrado para o acrônimo correto
+
+            // --- MUDANÇA 2: LÓGICA DE EXTRAÇÃO DINÂMICA ---
             String acronym = null;
-            if (confessionalMatcher.group(1) != null) acronym = "CFW";
-            else if (confessionalMatcher.group(2) != null) acronym = "CM";
-            else if (confessionalMatcher.group(3) != null) acronym = "BC";
-            else if (confessionalMatcher.group(4) != null) acronym = "TSB";
-            else if (confessionalMatcher.group(5) != null) acronym = "ICR";
+            // Itera sobre o nosso mapa (ex: 1->CFW, 2->CM, ..., 6->"HC")
+            for (int i = 1; i <= this.regexGroupToAcronymMap.size(); i++) {
+                if (confessionalMatcher.group(i) != null) {
+                    acronym = this.regexGroupToAcronymMap.get(i);
+                    break;
+                }
+            }
 
             if (acronym == null) return Optional.empty(); // Segurança
 
-            int chapterOrQuestion = Integer.parseInt(confessionalMatcher.group(6)); // O grupo do número mudou!
-            Integer section = confessionalMatcher.group(7) != null ?
-                    Integer.parseInt(confessionalMatcher.group(7)) : null;
+            // --- MUDANÇA 3: ÍNDICES DOS GRUPOS CORRIGIDOS ---
+            // Os grupos de capítulo/seção agora vêm *depois* dos N grupos de obras
+            int chapterGroupIndex = this.regexGroupToAcronymMap.size() + 1;
+            int sectionGroupIndex = this.regexGroupToAcronymMap.size() + 2;
+
+            int chapterOrQuestion = Integer.parseInt(confessionalMatcher.group(chapterGroupIndex));
+            Integer section = confessionalMatcher.group(sectionGroupIndex) != null ?
+                    Integer.parseInt(confessionalMatcher.group(sectionGroupIndex)) : null;
 
             logger.info("🔍 Referência direta CONFESSIONAL detectada: {} {}{}",
                     acronym.toUpperCase(), chapterOrQuestion,
                     (section != null ? "." + section : ""));
 
-            // O resto da sua lógica aqui está perfeito e não precisa mudar.
+            // O resto da sua lógica está PERFEITA
             List<ContentChunk> results = contentChunkRepository.findDirectReference(
                     acronym, chapterOrQuestion, section
             );
@@ -1483,24 +1395,25 @@ public class QueryService {
             }
 
             ContentChunk directHit = results.get(0);
-            ContextItem context = ContextItem.from(directHit, 1.0);
+            // (Correto: passa a 'Work' para o ContextItem)
+            ContextItem context = ContextItem.from(directHit, 1.0, buildContextualSource(directHit), directHit.getWork());
 
             String focusedPrompt = String.format("""
-            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
-            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
-            
-            DOCUMENTO: %s
-            REFERÊNCIA: %s %d%s
-            TEXTO ENCONTRADO:
-            "%s"
-            
-            INSTRUÇÕES:
-            1.  Comece confirmando a referência (Ex: "A pergunta %d do Catecismo Maior de Westminster diz...").
-            2.  Explique o significado teológico do texto em suas próprias palavras.
-            3.  Seja direto e focado exclusivamente no texto fornecido.
-            
-            EXPLICAÇÃO:
-            """,
+                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
+                            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
+                            
+                            DOCUMENTO: %s
+                            REFERÊNCIA: %s %d%s
+                            TEXTO ENCONTRADO:
+                            "%s"
+                            
+                            INSTRUÇÕES:
+                            1.  Comece confirmando a referência (Ex: "A pergunta %d do Catecismo Maior de Westminster diz...").
+                            2.  Explique o significado teológico do texto em suas próprias palavras.
+                            3.  Seja direto e focado exclusivamente no texto fornecido.
+                            
+                            EXPLICAÇÃO:
+                            """,
                     directHit.getWork().getTitle(),
                     acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""),
                     directHit.getContent(),
@@ -1517,20 +1430,17 @@ public class QueryService {
             return Optional.of(response);
         }
 
-        // --- BLOCO 2: Busca Bíblica (CORRIGIDO) ---
+        // --- BLOCO 2: Busca Bíblica (Sem alterações) ---
         else if (biblicalMatcher.find()) {
 
-            // 👇 EXTRAÇÃO CORRIGIDA DOS GRUPOS
-            String book = biblicalMatcher.group(2).trim();      // Nome do livro
-            int chapter = Integer.parseInt(biblicalMatcher.group(3));  // Capítulo
-            String verseGroup = biblicalMatcher.group(4);       // Versículo(s)
-            int verse = Integer.parseInt(verseGroup.split("-")[0]); // Primeiro versículo
+            // O seu código aqui está 100% correto
+            String book = biblicalMatcher.group(2).trim();
+            int chapter = Integer.parseInt(biblicalMatcher.group(3));
+            String verseGroup = biblicalMatcher.group(4);
+            int verse = Integer.parseInt(verseGroup.split("-")[0]);
 
             logger.info("🔍 Referência direta BÍBLICA detectada: {} {}:{}", book, chapter, verse);
-
-            // 🔧 NORMALIZAR NOME DO LIVRO (remover números duplicados)
             book = normalizeBookName(book);
-
             logger.info("📖 Livro normalizado: '{}'", book);
 
             List<StudyNote> results = studyNoteRepository.findByBiblicalReference(
@@ -1544,24 +1454,24 @@ public class QueryService {
             }
 
             StudyNote directHit = results.get(0);
-            ContextItem context = ContextItem.from(directHit, 1.0);
+            ContextItem context = ContextItem.from(directHit, 1.0); // Correto
 
             String focusedPrompt = String.format("""
-            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a uma nota de estudo bíblica.
-            Sua tarefa é explicar o texto da nota de estudo fornecida de forma clara e objetiva.
-            
-            DOCUMENTO: %s
-            REFERÊNCIA BÍBLICA: %s %d:%d
-            NOTA DE ESTUDO ENCONTRADA:
-            "%s"
-            
-            INSTRUÇÕES:
-            1.  Confirme a referência bíblica (Ex: "Para %s %d:%d, a nota de estudo da Bíblia de Genebra explica que...").
-            2.  Explique o significado teológico da nota de estudo fornecida.
-            3.  Seja direto e focado exclusivamente no texto da nota.
-            
-            EXPLICAÇÃO:
-            """,
+                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a uma nota de estudo bíblica.
+                            Sua tarefa é explicar o texto da nota de estudo fornecida de forma clara e objetiva.
+                            
+                            DOCUMENTO: %s
+                            REFERÊNCIA BÍBLICA: %s %d:%d
+                            NOTA DE ESTUDO ENCONTRADA:
+                            "%s"
+                            
+                            INSTRUÇÕES:
+                            1.  Confirme a referência bíblica (Ex: "Para %s %d:%d, a nota de estudo da Bíblia de Genebra explica que...").
+                            2.  Explique o significado teológico da nota de estudo fornecida.
+                            3.  Seja direto e focado exclusivamente no texto da nota.
+                            
+                            EXPLICAÇÃO:
+                            """,
                     context.source(),
                     book, chapter, verse,
                     directHit.getNoteContent(),
@@ -1685,6 +1595,20 @@ public class QueryService {
         return Optional.empty();
     }
 
+    @Cacheable("synonyms")
+    public Map<String, List<String>> getSynonymMap() {
+        logger.info("Buscando sinônimos do banco de dados e populando o cache 'synonyms'...");
+        List<TheologicalSynonym> allSynonyms = synonymRepository.findAll();
+
+        Map<String, List<String>> synonymMap = allSynonyms.stream()
+                .collect(Collectors.groupingBy(
+                        synonym -> synonym.getMainTerm().toLowerCase(), // Força a chave do mapa a ser minúscula
+                        Collectors.mapping(TheologicalSynonym::getSynonym, Collectors.toList())
+                ));
+
+        logger.info("Cache 'synonyms' populado com {} termos principais.", synonymMap.size());
+        return synonymMap;
+    }
 
 }
 

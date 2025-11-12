@@ -6,6 +6,7 @@ import br.com.fereformada.api.model.Topic;
 import br.com.fereformada.api.service.AsyncImportService;
 import br.com.fereformada.api.service.ContentAdminService; // Removido Repos
 import jakarta.persistence.EntityNotFoundException;
+import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -239,4 +240,24 @@ public class ContentAdminController {
     }
 
     record IdListDTO(List<Long> ids) {}
+
+    @GetMapping("/synonyms")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<List<TheologicalSynonymDTO>> getAllSynonyms() {
+        return ResponseEntity.ok(adminService.findAllSynonyms());
+    }
+
+    @PostMapping("/synonyms")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<TheologicalSynonymDTO> createSynonym(@Valid @RequestBody TheologicalSynonymDTO dto) {
+        TheologicalSynonymDTO createdSynonym = adminService.createSynonym(dto);
+        return ResponseEntity.created(URI.create("/api/admin/synonyms/" + createdSynonym.id())).body(createdSynonym);
+    }
+
+    @DeleteMapping("/synonyms/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Void> deleteSynonym(@PathVariable Long id) {
+        adminService.deleteSynonym(id);
+        return ResponseEntity.noContent().build();
+    }
 }

@@ -9,6 +9,7 @@ import com.pgvector.PGvector;
 import jakarta.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.CacheManager;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -33,6 +34,8 @@ public class ContentAdminService {
     private final GeminiApiClient geminiApiClient;
     private final ImportTaskRepository importTaskRepository;
     private final AsyncImportService asyncImportService;
+    private final TheologicalSynonymRepository synonymRepository;
+    private final CacheManager cacheManager;
 
     private static final int EMBEDDING_BATCH_SIZE = 50;
 
@@ -42,7 +45,7 @@ public class ContentAdminService {
                                WorkRepository workRepository,
                                AuthorRepository authorRepository,
                                TopicRepository topicRepository,
-                               GeminiApiClient geminiApiClient, ObjectMapper objectMapper, ImportTaskRepository importTaskRepository, AsyncImportService asyncImportService) {
+                               GeminiApiClient geminiApiClient, ObjectMapper objectMapper, ImportTaskRepository importTaskRepository, AsyncImportService asyncImportService, TheologicalSynonymRepository synonymRepository, CacheManager cacheManager) {
 
         this.contentChunkRepository = contentChunkRepository;
         this.workRepository = workRepository;
@@ -52,10 +55,11 @@ public class ContentAdminService {
         this.objectMapper = objectMapper;
         this.importTaskRepository = importTaskRepository;
         this.asyncImportService = asyncImportService;
+        this.synonymRepository = synonymRepository;
+        this.cacheManager = cacheManager;
     }
 
     // --- Métodos de Obras (Works) ---
-    // (findAllWorks, createWork, updateWork, deleteWork - MANTENHA TODOS)
     @Transactional(readOnly = true)
     public Page<WorkResponseDTO> findAllWorks(Pageable pageable) {
         return workRepository.findAll(pageable).map(WorkResponseDTO::new);
@@ -111,7 +115,6 @@ public class ContentAdminService {
     }
 
     // --- Métodos de Autores (Authors) ---
-    // (findAllAuthors, findAllAuthorsList, createAuthor, updateAuthor, deleteAuthor - MANTENHA TODOS)
     @Transactional(readOnly = true)
     public Page<AuthorDTO> findAllAuthors(Pageable pageable) {
         return authorRepository.findAll(pageable).map(AuthorDTO::new);
@@ -156,7 +159,6 @@ public class ContentAdminService {
     }
 
     // --- Métodos de Tópicos (Topics) ---
-    // (findAllTopics, findAllTopicsList, createTopic, updateTopic, deleteTopic - MANTENHA TODOS)
     @Transactional(readOnly = true)
     public Page<TopicDTO> findAllTopics(Pageable pageable) {
         return topicRepository.findAll(pageable).map(TopicDTO::new);
@@ -204,7 +206,7 @@ public class ContentAdminService {
 
         Page<ChunkProjection> projectionPage;
 
-        // --- A NOVA LÓGICA DE DECISÃO ---
+        // --- ÓGICA DE DECISÃO ---
         if (search != null && !search.isBlank()) {
             // Se tem busca, chama o novo método de busca
             projectionPage = contentChunkRepository.searchByWorkIdProjection(workId, search, pageable);
@@ -212,11 +214,9 @@ public class ContentAdminService {
             // Se não tem busca, chama o método que você já usa
             projectionPage = contentChunkRepository.findByWorkIdProjection(workId, pageable);
         }
-        // --- FIM DA NOVA LÓGICA ---
+        // --- FIM DA LÓGICA ---
 
 
-        // O RESTO DO SEU MÉTODO (PASSOS 2-6) PERMANECE IDÊNTICO:
-        // Nós apenas mudamos *qual* 'projectionPage' ele vai usar.
 
         // PASSO 2: Pega os IDs dos chunks desta página
         List<Long> chunkIds = projectionPage.getContent().stream()
@@ -481,6 +481,68 @@ public class ContentAdminService {
 
         // 3. Chama o novo método do repositório com os arrays
         contentChunkRepository.bulkAddTopicsToChunks(chunkIdsArray, topicIdsArray);
+    }
+
+    // ======================================================
+    // 4. NOVOS MÉTODOS (CRUD DE SINÔNIMOS)
+    // ======================================================
+
+    /**
+     * Busca todos os sinônimos, ordenados pelo termo principal.
+     */
+    @Transactional(readOnly = true)
+    public List<TheologicalSynonymDTO> findAllSynonyms() {
+        return synonymRepository.findAllByOrderByMainTermAsc().stream()
+                .map(TheologicalSynonymDTO::new)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Cria um novo par de sinônimos.
+     */
+    @Transactional
+    public TheologicalSynonymDTO createSynonym(TheologicalSynonymDTO dto) {
+        String mainTermLower = dto.mainTerm().toLowerCase().trim();
+        String synonymLower = dto.synonym().toLowerCase().trim();
+
+        // Verifica se o par exato já existe
+        if (synonymRepository.existsByMainTermIgnoreCaseAndSynonymIgnoreCase(mainTermLower, synonymLower)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Este par de sinônimos já existe.");
+        }
+
+        TheologicalSynonym entity = new TheologicalSynonym();
+        entity.setMainTerm(mainTermLower);
+        entity.setSynonym(synonymLower);
+
+        TheologicalSynonym savedEntity = synonymRepository.save(entity);
+
+        clearSynonymCache();
+
+        return new TheologicalSynonymDTO(savedEntity);
+    }
+
+    /**
+     * Deleta um par de sinônimos pelo ID.
+     */
+    @Transactional
+    public void deleteSynonym(Long id) {
+        if (!synonymRepository.existsById(id)) {
+            throw new EntityNotFoundException("Sinônimo não encontrado: " + id);
+        }
+
+        synonymRepository.deleteById(id);
+        clearSynonymCache();
+
+        // TODO: Limpar o cache de sinônimos do QueryService aqui (veremos na Tarefa 4)
+    }
+
+    private void clearSynonymCache() {
+        try {
+            cacheManager.getCache("synonyms").clear();
+            logger.info("Cache 'synonyms' limpo com sucesso.");
+        } catch (Exception e) {
+            logger.warn("Falha ao limpar o cache 'synonyms': {}", e.getMessage());
+        }
     }
 }
 
