@@ -96,23 +96,25 @@ public class QueryAnalyzer {
 
         String cleaned = response.trim();
 
-        // Tenta encontrar o início do JSON
+        // 1. Tenta encontrar o início do JSON
         int jsonStart = cleaned.indexOf('{');
-        // Tenta encontrar o fim do JSON
+        // 2. Tenta encontrar o fim do JSON
         int jsonEnd = cleaned.lastIndexOf('}');
 
-        // Se encontrou um '{' e um '}' válidos
+        // 3. Se encontrou um '{' e um '}' válidos
         if (jsonStart != -1 && jsonEnd != -1 && jsonEnd > jsonStart) {
-            // Extrai o JSON bruto
+
+            // 4. Extrai o JSON bruto
             cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
 
-            // Verifica se é um JSON válido (safety check)
+            // 5. Verifica se é um JSON válido (safety check)
             if (cleaned.startsWith("{") && cleaned.endsWith("}")) {
+                logger.debug("JSON limpo e extraído com sucesso.");
                 return cleaned;
             }
         }
 
-        // Se não encontrou, ou se o resultado é inválido, loga o aviso e retorna vazio
+        // 6. Se não encontrou, ou se o resultado é inválido, loga o aviso e retorna vazio
         logger.warn("Resposta do QueryAnalyzer não foi um JSON válido ou não pôde ser limpa: {}", response);
         return "{}";
     }
