@@ -12,6 +12,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -74,14 +75,19 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             @Param("secao") Integer secao
     );
 
-    @Query("SELECT c FROM ContentChunk c JOIN c.work w WHERE " +
+    @Query("SELECT new br.com.fereformada.api.dto.ChunkProjection(" +
+            "  c.id, c.content, c.question, c.sectionTitle, c.chapterTitle, " +
+            "  c.chapterNumber, c.sectionNumber, c.subsectionTitle, " +
+            "  c.subSubsectionTitle, c.work.id, c.work.title " +
+            ") " +
+            "FROM ContentChunk c JOIN c.work w WHERE " +
             "LOWER(w.acronym) = LOWER(:acronym) AND " +
             "((:chapter IS NULL AND c.chapterNumber IS NULL) OR (c.chapterNumber = :chapter)) AND " +
             "((:section IS NULL AND c.sectionNumber IS NULL) OR (c.sectionNumber = :section))")
-    List<ContentChunk> findDirectReference(
-            @Param("acronym") String acronym,
-            @Param("chapter") Integer chapter,
-            @Param("section") Integer section);
+    List<ChunkProjection> findDirectReferenceProjection( // <-- MUDANÇA 1: Nome e Tipo de Retorno
+                                                         @Param("acronym") String acronym,
+                                                         @Param("chapter") Integer chapter,
+                                                         @Param("section") Integer section);
 
     @Query("""
             SELECT c FROM ContentChunk c 
@@ -212,4 +218,62 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             "GROUP BY w.acronym " +
             "ORDER BY COUNT(c) DESC")
     List<ContentCountByWorkDTO> findChunkCountsByWorkAcronym();
+
+    @Modifying
+    @Transactional
+    @Query(value = """
+        UPDATE content_chunks SET
+            content = :content,
+            question = :question,
+            section_title = :sectionTitle,
+            chapter_title = :chapterTitle,
+            chapter_number = :chapterNumber,
+            section_number = :sectionNumber,
+            subsection_title = :subsectionTitle,
+            sub_subsection_title = :subSubsectionTitle,
+            content_vector = CAST(:vector AS vector)
+        WHERE id = :id
+        """, nativeQuery = true)
+    void updateChunkWithVector(
+            @Param("id") Long id,
+            @Param("content") String content,
+            @Param("question") String question,
+            @Param("sectionTitle") String sectionTitle,
+            @Param("chapterTitle") String chapterTitle,
+            @Param("chapterNumber") Integer chapterNumber,
+            @Param("sectionNumber") Integer sectionNumber,
+            @Param("subsectionTitle") String subsectionTitle,
+            @Param("subSubsectionTitle") String subSubsectionTitle,
+            @Param("vector") String vector // Passamos o vetor como String "[1.2, 0.3, ...]"
+    );
+
+    /**
+     * ATUALIZAÇÃO SEGURA (Sem Vetor):
+     * Atualiza o chunk usando SQL nativo, MAS IGNORA o vetor.
+     */
+    @Modifying
+    @Transactional
+    @Query(value = """
+        UPDATE content_chunks SET
+            content = :content,
+            question = :question,
+            section_title = :sectionTitle,
+            chapter_title = :chapterTitle,
+            chapter_number = :chapterNumber,
+            section_number = :sectionNumber,
+            subsection_title = :subsectionTitle,
+            sub_subsection_title = :subSubsectionTitle
+        WHERE id = :id
+        """, nativeQuery = true)
+    void updateChunkMetadataOnly(
+            @Param("id") Long id,
+            @Param("content") String content,
+            @Param("question") String question,
+            @Param("sectionTitle") String sectionTitle,
+            @Param("chapterTitle") String chapterTitle,
+            @Param("chapterNumber") Integer chapterNumber,
+            @Param("sectionNumber") Integer sectionNumber,
+            @Param("subsectionTitle") String subsectionTitle,
+            @Param("subSubsectionTitle") String subSubsectionTitle
+    );
 }

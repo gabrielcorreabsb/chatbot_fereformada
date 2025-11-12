@@ -272,18 +272,62 @@ public class ContentAdminService {
 
     @Transactional
     public ChunkResponseDTO updateChunk(Long chunkId, ChunkRequestDTO dto) {
-        ContentChunk chunk = contentChunkRepository.findById(chunkId).orElseThrow(/*...*/);
-        String oldContent = chunk.getContent();
-        dto.toEntity(chunk);
+        // 1. Busca a projeção (Seguro, não carrega o vetor)
+        ChunkProjection oldProjection = contentChunkRepository.findProjectionById(chunkId)
+                .orElseThrow(() -> new EntityNotFoundException("Chunk não encontrado: " + chunkId));
+
+        // 2. Compara se o conteúdo mudou (para saber se precisa re-vetorizar)
+        boolean contentChanged = !Objects.equals(oldProjection.content(), dto.content()) ||
+                !Objects.equals(oldProjection.question(), dto.question());
+
+        if (contentChanged) {
+            // 3. CAMINHO A: O conteúdo mudou. Re-vetorizar e atualizar tudo.
+            logger.info("Conteúdo do Chunk {} mudou. Re-vetorizando...", chunkId);
+
+            // 3a. Gera o novo vetor
+            String textToEmbed = (dto.question() != null ? dto.question() + "\n" : "") +
+                    (dto.content() != null ? dto.content() : "");
+            PGvector newVector = geminiApiClient.generateEmbedding(textToEmbed);
+            String vectorString = (newVector != null) ? newVector.toString() : null;
+
+            // 3b. Chama a query de update COM vetor
+            contentChunkRepository.updateChunkWithVector(
+                    chunkId,
+                    dto.content(), dto.question(),
+                    dto.sectionTitle(), dto.chapterTitle(),
+                    dto.chapterNumber(), dto.sectionNumber(),
+                    dto.subsectionTitle(), dto.subSubsectionTitle(),
+                    vectorString
+            );
+        } else {
+            // 4. CAMINHO B: O conteúdo NÃO mudou. Atualizar só metadados.
+            logger.info("Conteúdo do Chunk {} não mudou. Atualizando apenas metadados...", chunkId);
+
+            // 4a. Chama a query de update SEM vetor
+            contentChunkRepository.updateChunkMetadataOnly(
+                    chunkId,
+                    dto.content(), dto.question(),
+                    dto.sectionTitle(), dto.chapterTitle(),
+                    dto.chapterNumber(), dto.sectionNumber(),
+                    dto.subsectionTitle(), dto.subSubsectionTitle()
+            );
+        }
+
+        // 5. Atualiza os Tópicos (a sua lógica de DTO para tópicos)
         if (dto.topicIds() != null) {
-            Set<Topic> topics = new HashSet<>(topicRepository.findAllById(dto.topicIds()));
-            chunk.setTopics(topics);
+            // Limpa os tópicos antigos e define os novos
+            contentChunkRepository.deleteChunkTopicsByChunkId(chunkId); // Limpa
+            if (!dto.topicIds().isEmpty()) {
+                // Adiciona
+                contentChunkRepository.bulkAddTopicsToChunks(
+                        new Long[]{chunkId},
+                        dto.topicIds().toArray(new Long[0])
+                );
+            }
         }
-        if (oldContent == null || !oldContent.equals(dto.content()) || (chunk.getQuestion() != null && !chunk.getQuestion().equals(dto.question()))) {
-            vectorizeChunk(chunk);
-        }
-        ContentChunk updatedChunk = contentChunkRepository.save(chunk);
-        return new ChunkResponseDTO(updatedChunk);
+
+        // 6. Retorna a projeção atualizada (Seguro)
+        return findChunkById(chunkId);
     }
 
     @Transactional(readOnly = true)

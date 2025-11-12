@@ -6,6 +6,7 @@ import br.com.fereformada.api.repository.*;
 import br.com.fereformada.api.repository.MensagemRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pgvector.PGvector;
+import jakarta.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
@@ -1385,7 +1386,7 @@ public class QueryService {
                     (section != null ? "." + section : ""));
 
             // O resto da sua lógica está PERFEITA
-            List<ContentChunk> results = contentChunkRepository.findDirectReference(
+            List<ChunkProjection> results = contentChunkRepository.findDirectReferenceProjection(
                     acronym, chapterOrQuestion, section
             );
 
@@ -1394,30 +1395,48 @@ public class QueryService {
                 return Optional.empty();
             }
 
-            ContentChunk directHit = results.get(0);
-            // (Correto: passa a 'Work' para o ContextItem)
-            ContextItem context = ContextItem.from(directHit, 1.0, buildContextualSource(directHit), directHit.getWork());
+            ChunkProjection directHit = results.get(0);
+            Work work = workRepository.findById(directHit.workId())
+                    .orElseThrow(() -> new EntityNotFoundException("Work não encontrada para o chunk direto: " + directHit.id()));
+
+            // Criamos uma entidade 'ContentChunk' "falsa" (leve)
+            // apenas para o construtor do ContextItem.
+            ContentChunk chunkShell = new ContentChunk();
+            chunkShell.setId(directHit.id());
+            chunkShell.setContent(directHit.content());
+            chunkShell.setQuestion(directHit.question());
+            chunkShell.setWork(work); // Passamos a Work completa
+            // ======================================================
+
+            // ======================================================
+            // MUDANÇA 3 de 3: Usar o 'chunkShell'
+            // ======================================================
+            // A lógica do ContextItem.from() já estava correta
+            ContextItem context = ContextItem.from(chunkShell, 1.0, buildContextualSource(directHit), work);
+            String referenceString = String.format("%s %d%s",
+                    acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : "")
+            );
 
             String focusedPrompt = String.format("""
-                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
-                            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
-                            
-                            DOCUMENTO: %s
-                            REFERÊNCIA: %s %d%s
-                            TEXTO ENCONTRADO:
-                            "%s"
-                            
-                            INSTRUÇÕES:
-                            1.  Comece confirmando a referência (Ex: "A pergunta %d do Catecismo Maior de Westminster diz...").
-                            2.  Explique o significado teológico do texto em suas próprias palavras.
-                            3.  Seja direto e focado exclusivamente no texto fornecido.
-                            
-                            EXPLICAÇÃO:
-                            """,
-                    directHit.getWork().getTitle(),
-                    acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""),
-                    directHit.getContent(),
-                    chapterOrQuestion, (section != null ? section : 1)
+                        Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
+                        Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
+                        
+                        DOCUMENTO: %s
+                        REFERÊNCIA: %s
+                        TEXTO ENCONTRADO:
+                        "%s"
+                        
+                        INSTRUÇÕES:
+                        1.  Comece confirmando a referência (Ex: "Sobre %s, o texto diz...").
+                        2.  Explique o significado teológico do texto em suas próprias palavras.
+                        3.  Seja direto e focado exclusivamente no texto fornecido.
+                        
+                        EXPLICAÇÃO:
+                        """,
+                    work.getTitle(),      // %s (Documento)
+                    referenceString,      // %s (Referência)
+                    directHit.content(),  // %s (Texto Encontrado)
+                    referenceString       // %s (Instrução 1)
             );
 
             String aiAnswer = geminiApiClient.generateContent(
@@ -1489,6 +1508,33 @@ public class QueryService {
         }
 
         return Optional.empty();
+    }
+
+    private String buildContextualSource(ChunkProjection chunk) {
+        // Lógica idêntica, mas usando os métodos da projeção (ex: chunk.chapterTitle())
+        StringBuilder path = new StringBuilder();
+
+        if (chunk.chapterTitle() != null && !chunk.chapterTitle().isEmpty()) {
+            path.append(chunk.chapterTitle());
+        }
+        if (chunk.sectionTitle() != null && !chunk.sectionTitle().isEmpty()) {
+            if (!path.isEmpty()) path.append(" > ");
+            path.append(chunk.sectionTitle());
+        }
+        if (chunk.subsectionTitle() != null && !chunk.subsectionTitle().isEmpty()) {
+            if (!path.isEmpty()) path.append(" > ");
+            path.append(chunk.subsectionTitle());
+        }
+        if (chunk.subSubsectionTitle() != null && !chunk.subSubsectionTitle().isEmpty()) {
+            if (!path.isEmpty()) path.append(" > ");
+            path.append(chunk.subSubsectionTitle());
+        }
+
+        if (path.isEmpty()) {
+            return chunk.workTitle();
+        }
+
+        return chunk.workTitle() + " - " + path.toString();
     }
 
     private String normalizeBookName(String rawBookName) {
