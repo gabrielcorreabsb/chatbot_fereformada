@@ -53,6 +53,7 @@ public class QueryService {
     private final TheologicalSynonymRepository synonymRepository;
     private final Pattern confessionalPattern;
     private final Map<Integer, String> regexGroupToAcronymMap;
+    private final Set<String> allAcronymsSet;
 
     public QueryService(ContentChunkRepository contentChunkRepository,
                         StudyNoteRepository studyNoteRepository,
@@ -76,12 +77,23 @@ public class QueryService {
         List<Work> allWorks = workRepository.findAll();
         StringBuilder regexBuilder = new StringBuilder("\\b(?:");
         this.regexGroupToAcronymMap = new HashMap<>();
+
+        // ======================================================
+        // 🚀 1. CRIE UM SET TEMPORÁRIO AQUI
+        // ======================================================
+        Set<String> tempAcronyms = new HashSet<>();
+
         int groupIndex = 1; // O índice do grupo de captura do Regex começa em 1
 
         for (Work work : allWorks) {
             if (work.getAcronym() == null || work.getAcronym().isBlank()) continue;
 
             String acronym = work.getAcronym();
+
+            // ======================================================
+            // 🚀 2. ADICIONE O ACRÔNIMO (em minúsculas) AO SET
+            // ======================================================
+            tempAcronyms.add(acronym.toLowerCase());
 
             // --- A LÓGICA DE TÍTULO "HARDCODED" FOI REMOVIDA (Conforme sua solicitação) ---
             String regexFragment = Pattern.quote(acronym); // Ex: "CFW", "HC", "TSB"
@@ -98,6 +110,12 @@ public class QueryService {
             groupIndex++;
         }
 
+        // ======================================================
+        // 🚀 3. ATRIBUA O CAMPO FINAL DA CLASSE
+        // ======================================================
+        this.allAcronymsSet = Collections.unmodifiableSet(tempAcronyms);
+
+        // --- Lógica restante (perfeita) ---
         regexBuilder.append(")\\b"); // Fim dos grupos de obras
         regexBuilder.append("[\\s,]*"); // Separador
         regexBuilder.append("(?:pergunta|capitulo|cap\\.?|p\\.?\\s*)?"); // Palavra-chave opcional
@@ -142,17 +160,79 @@ public class QueryService {
             logger.info("Carregado {} mensagens do histórico do chat {}", chatHistory.size(), chatId);
         }
 
-        // --- 4. NOVO: Análise da Pergunta (SLOW-PATH) ---
-        MetadataFilter filter = queryAnalyzer.extractFilters(userQuestion, chatHistory);
-        if (!filter.isEmpty()) {
-            logger.info("🧠 Filtros de metadados extraídos via LLM: {}", filter);
-        } else {
-            logger.info("Buscando por (busca semântica pura): '{}'", userQuestion);
+        // --- 4. NOVO: Análise da Pergunta (ABORDAGEM HÍBRIDA - CORRIGIDA) ---
+
+        MetadataFilter filter = null; // Começa nulo
+        String userQuestionLower = userQuestion.toLowerCase();
+
+        // ETAPA 1: Tentar extrair o filtro de acrônimo (Rápido e Barato)
+        // Usamos o 'allAcronymsSet' que foi carregado do banco no construtor.
+        String foundAcronym = null;
+        for (String acronym : this.allAcronymsSet) {
+            // Usamos \b (word boundary) para garantir que "cfw" não corresponda a "gallowscfw"
+            // Esta é a checagem que estava faltando.
+            if (userQuestionLower.matches(".*\\b" + Pattern.quote(acronym) + "\\b.*")) {
+                foundAcronym = acronym;
+                break; // Encontramos o primeiro, paramos
+            }
         }
 
-        // --- 5. LÓGICA DE RAG CONVERSACIONAL (Mantido e Corrigido) ---
-        // Define a query base. 'ragQuery' será a string usada para a busca semântica.
-        String ragQuery = userQuestion;
+        if (foundAcronym != null) {
+            // Se o Regex Rápido encontrou, criamos o filtro manualmente
+            logger.info("🧠 Filtro de acrônimo extraído via Regex Rápido: {}", foundAcronym.toUpperCase());
+            filter = new MetadataFilter(foundAcronym.toUpperCase(), null, null, null);
+        }
+
+        // ETAPA 2: Se o Regex Rápido falhou, usar o LLM (Lento e Caro)
+        if (filter == null) {
+            logger.info("Nenhum acrônimo rápido encontrado. Usando QueryAnalyzer (LLM)...");
+            // A correção anterior (Collections.emptyList()) é mantida
+            filter = queryAnalyzer.extractFilters(userQuestion, Collections.emptyList()); //
+        }
+
+        // --- 5. LÓGICA DE HY-DE (AGORA CORRETA) ---
+        // Esta lógica permanece exatamente como estava.
+        String ragQuery;
+
+        if (!filter.isEmpty()) {
+            logger.info("🧠 Filtros de metadados extraídos: {}", filter);
+
+            // ======================================================
+            // 🚀 OTIMIZAÇÃO ADICIONADA AQUI
+            // ======================================================
+            if (foundAcronym != null) {
+                // Se o filtro foi do Regex Rápido, limpamos a query de busca
+                // Usamos (?i) para case-insensitive e \b para palavra inteira
+                String cleanQuery = userQuestion.replaceAll("(?i)\\b" + Pattern.quote(foundAcronym) + "\\b", "").trim();
+
+                // Remove espaços duplos que a remoção pode ter deixado
+                cleanQuery = cleanQuery.replaceAll("\\s+", " ");
+
+                // Usa a query limpa (ou a original se a limpeza falhar)
+                ragQuery = cleanQuery.isEmpty() ? userQuestion : cleanQuery;
+                logger.info("🧠 Query de busca limpa (pós-filtro): '{}'", ragQuery);
+            } else {
+                // Se o filtro foi do LLM, não sabemos o que limpar, então usamos a original (seguro)
+                ragQuery = userQuestion;
+            }
+            // ======================================================
+
+        } else {
+            // 🚀 3. Se NÃO tem filtro, é busca semântica pura -> Aplicar Hy-DE
+            logger.info("Buscando por (busca semântica pura): '{}'. Aplicando Hy-DE...", userQuestion); //
+
+            // 🚀 4. Chamar o novo método helper
+            ragQuery = generateHypotheticalDocument(userQuestion); //
+
+            // 🚀 5. Fallback: Se o Gemini falhar, usar a query original
+            if (ragQuery == null || ragQuery.isBlank()) {
+                logger.warn("⚠️ Falha ao gerar documento hipotético (Hy-DE). Usando a pergunta original.");
+                ragQuery = userQuestion;
+            } else {
+                logger.info("🧠 Pergunta transformada (Hy-DE): '{}'", ragQuery.substring(0, Math.min(60, ragQuery.length())) + "...");
+            }
+        }
+
 
         Optional<Integer> sourceNum = extractSourceNumberFromQuestion(userQuestion);
         if (sourceNum.isPresent()) {
@@ -255,6 +335,27 @@ public class QueryService {
         return response;
     }
 
+    /**
+     * TAREFA 2.2 (Hy-DE): Gera uma "resposta hipotética" para perguntas vagas
+     * para melhorar a qualidade da busca vetorial.
+     *
+     * @param userQuestion A pergunta vaga do usuário (ex: "O que é a graça?")
+     * @return Uma resposta densa e hipotética (ex: "A graça é o favor imerecido de Deus...")
+     */
+    private String generateHypotheticalDocument(String userQuestion) {
+        String hydePrompt = String.format("""
+                Gere um parágrafo curto e denso que responda diretamente à pergunta: [%s].
+                Comece a resposta diretamente, sem introduções.
+                """, userQuestion);
+
+        try {
+            // Chamamos o Gemini com um prompt simples, sem histórico
+            return geminiApiClient.generateContent(hydePrompt, Collections.emptyList(), userQuestion);
+        } catch (Exception e) {
+            logger.error("❌ Erro ao gerar Hy-DE para a pergunta '{}': {}", userQuestion, e.getMessage(), e);
+            return null; // Retorna nulo para que o método 'query()' possa fazer o fallback
+        }
+    }
 
     private boolean shouldUseKeywordSearch(String question, List<ContextItem> vectorResults) {
         // Ativar keyword search se:
@@ -1433,21 +1534,21 @@ public class QueryService {
             );
 
             String focusedPrompt = String.format("""
-                        Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
-                        Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
-                        
-                        DOCUMENTO: %s
-                        REFERÊNCIA: %s
-                        TEXTO ENCONTRADO:
-                        "%s"
-                        
-                        INSTRUÇÕES:
-                        1.  Comece confirmando a referência (Ex: "Sobre %s, o texto diz...").
-                        2.  Explique o significado teológico do texto em suas próprias palavras.
-                        3.  Seja direto e focado exclusivamente no texto fornecido.
-                        
-                        EXPLICAÇÃO:
-                        """,
+                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
+                            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
+                            
+                            DOCUMENTO: %s
+                            REFERÊNCIA: %s
+                            TEXTO ENCONTRADO:
+                            "%s"
+                            
+                            INSTRUÇÕES:
+                            1.  Comece confirmando a referência (Ex: "Sobre %s, o texto diz...").
+                            2.  Explique o significado teológico do texto em suas próprias palavras.
+                            3.  Seja direto e focado exclusivamente no texto fornecido.
+                            
+                            EXPLICAÇÃO:
+                            """,
                     work.getTitle(),      // %s (Documento)
                     referenceString,      // %s (Referência)
                     directHit.content(),  // %s (Texto Encontrado)
@@ -1477,7 +1578,8 @@ public class QueryService {
             book = normalizeBookName(book);
             logger.info("📖 Livro normalizado: '{}'", book);
 
-            List<StudyNote> results = studyNoteRepository.findByBiblicalReference(
+// 1. O tipo de retorno agora é a sua projeção
+            List<StudyNoteProjection> results = studyNoteRepository.findByBiblicalReference(
                     book, chapter, verse
             );
 
@@ -1487,8 +1589,20 @@ public class QueryService {
                 return Optional.empty();
             }
 
-            StudyNote directHit = results.get(0);
-            ContextItem context = ContextItem.from(directHit, 1.0); // Correto
+            StudyNoteProjection directHit = results.get(0);
+            // 3. Criamos uma entidade 'StudyNote' "falsa" (leve)
+            //    apenas para o construtor do ContextItem.from(StudyNote...)
+            StudyNote noteShell = new StudyNote();
+            noteShell.setId(directHit.id()); // 🚀 Usando accessor de record
+            noteShell.setBook(directHit.book());
+            noteShell.setStartChapter(directHit.startChapter());
+            noteShell.setStartVerse(directHit.startVerse());
+            noteShell.setEndChapter(directHit.endChapter());
+            noteShell.setEndVerse(directHit.endVerse());
+            noteShell.setNoteContent(directHit.noteContent());
+
+            // 4. Usamos o 'noteShell'
+            ContextItem context = ContextItem.from(noteShell, 1.0);
 
             String focusedPrompt = String.format("""
                             Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a uma nota de estudo bíblica.
@@ -1508,7 +1622,7 @@ public class QueryService {
                             """,
                     context.source(),
                     book, chapter, verse,
-                    directHit.getNoteContent(),
+                    directHit.noteContent(),
                     book, chapter, verse
             );
 

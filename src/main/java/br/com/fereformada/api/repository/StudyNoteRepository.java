@@ -102,7 +102,11 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
     List<StudyNote> searchByKeywords(@Param("keyword") String keyword, Pageable pageable);
 
     @Query("""
-            SELECT s FROM StudyNote s
+            SELECT new br.com.fereformada.api.dto.StudyNoteProjection(
+              s.id, s.book, s.startChapter, s.startVerse, s.endChapter, 
+              s.endVerse, s.noteContent, s.source
+            ) 
+            FROM StudyNote s
             WHERE s.book = :book
               AND ((s.startChapter < :chapter) OR 
                    (s.startChapter = :chapter AND s.startVerse <= :verse))
@@ -110,10 +114,10 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
                    (s.endChapter = :chapter AND s.endVerse >= :verse))
             ORDER BY s.startChapter, s.startVerse
             """)
-    List<StudyNote> findByBiblicalReference(
-            @Param("book") String book,
-            @Param("chapter") int chapter,
-            @Param("verse") int verse
+    List<StudyNoteProjection> findByBiblicalReference( // 🚀 1. TIPO DE RETORNO MUDADO
+                                                       @Param("book") String book,
+                                                       @Param("chapter") int chapter,
+                                                       @Param("verse") int verse
     );
 
     @Query("""
