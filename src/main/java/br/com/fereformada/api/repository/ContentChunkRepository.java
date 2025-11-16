@@ -48,6 +48,30 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             @Param("secao") Integer secao
     );
 
+    @Query(nativeQuery = true, value = """
+            SELECT
+                c.id, c.content, c.question, c.section_title, c.chapter_title,
+                c.chapter_number, c.section_number, c.work_id,
+                c.subsection_title, c.sub_subsection_title,
+                1 - (c.question_vector <=> CAST(:embedding AS vector)) AS similarity_score -- 🚀 MUDANÇA 1
+            FROM content_chunks c
+            JOIN works w ON c.work_id = w.id
+            WHERE
+                c.question_vector IS NOT NULL -- 🚀 MUDANÇA 2
+                AND (:obraAcronimo IS NULL OR LOWER(w.acronym) = LOWER(:obraAcronimo))
+                AND (:capitulo IS NULL OR c.chapter_number = :capitulo)
+                AND (:secao IS NULL OR c.section_number = :secao)
+            ORDER BY similarity_score DESC
+            LIMIT :limit
+            """)
+    List<Object[]> findSimilarChunksByQuestionVector(
+                                                      @Param("embedding") String embedding,
+                                                      @Param("limit") int limit,
+                                                      @Param("obraAcronimo") String obraAcronimo,
+                                                      @Param("capitulo") Integer capitulo,
+                                                      @Param("secao") Integer secao
+    );
+
     @Query(value = """
             SELECT 
                 c.id, c.content, c.question, c.section_title, c.chapter_title,
@@ -177,16 +201,16 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
 
     @Modifying
     @Query(value = """
-        INSERT INTO chunk_topics (chunk_id, topic_id)
-        SELECT
-            c_id AS chunk_id,
-            t_id AS topic_id
-        FROM
-            unnest(?1) AS c_id  -- <-- CAST REMOVIDO
-        CROSS JOIN
-            unnest(?2) AS t_id  -- <-- CAST REMOVIDO
-        ON CONFLICT (chunk_id, topic_id) DO NOTHING
-        """, nativeQuery = true)
+            INSERT INTO chunk_topics (chunk_id, topic_id)
+            SELECT
+                c_id AS chunk_id,
+                t_id AS topic_id
+            FROM
+                unnest(?1) AS c_id  -- <-- CAST REMOVIDO
+            CROSS JOIN
+                unnest(?2) AS t_id  -- <-- CAST REMOVIDO
+            ON CONFLICT (chunk_id, topic_id) DO NOTHING
+            """, nativeQuery = true)
     void bulkAddTopicsToChunks(Long[] chunkIds, Long[] topicIds); // <-- TIPO ALTERADO
 
 
@@ -231,20 +255,22 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             section_number = :sectionNumber,
             subsection_title = :subsectionTitle,
             sub_subsection_title = :subSubsectionTitle,
-            content_vector = CAST(:vector AS vector)
+            content_vector = CAST(:contentVector AS vector),
+            question_vector = CAST(:questionVector AS vector)
         WHERE id = :id
         """, nativeQuery = true)
     void updateChunkWithVector(
-            @Param("id") Long id,
-            @Param("content") String content,
-            @Param("question") String question,
-            @Param("sectionTitle") String sectionTitle,
-            @Param("chapterTitle") String chapterTitle,
-            @Param("chapterNumber") Integer chapterNumber,
-            @Param("sectionNumber") Integer sectionNumber,
-            @Param("subsectionTitle") String subsectionTitle,
-            @Param("subSubsectionTitle") String subSubsectionTitle,
-            @Param("vector") String vector // Passamos o vetor como String "[1.2, 0.3, ...]"
+            @Param("id") Long id,                           // 1
+            @Param("content") String content,              // 2
+            @Param("question") String question,            // 3
+            @Param("sectionTitle") String sectionTitle,     // 4
+            @Param("chapterTitle") String chapterTitle,     // 5
+            @Param("chapterNumber") Integer chapterNumber,  // 6
+            @Param("sectionNumber") Integer sectionNumber,  // 7
+            @Param("subsectionTitle") String subsectionTitle, // 8
+            @Param("subSubsectionTitle") String subSubsectionTitle, // 9
+            @Param("contentVector") String contentVector,    // 10
+            @Param("questionVector") String questionVector  // 11
     );
 
     /**
@@ -254,17 +280,17 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
     @Modifying
     @Transactional
     @Query(value = """
-        UPDATE content_chunks SET
-            content = :content,
-            question = :question,
-            section_title = :sectionTitle,
-            chapter_title = :chapterTitle,
-            chapter_number = :chapterNumber,
-            section_number = :sectionNumber,
-            subsection_title = :subsectionTitle,
-            sub_subsection_title = :subSubsectionTitle
-        WHERE id = :id
-        """, nativeQuery = true)
+            UPDATE content_chunks SET
+                content = :content,
+                question = :question,
+                section_title = :sectionTitle,
+                chapter_title = :chapterTitle,
+                chapter_number = :chapterNumber,
+                section_number = :sectionNumber,
+                subsection_title = :subsectionTitle,
+                sub_subsection_title = :subSubsectionTitle
+            WHERE id = :id
+            """, nativeQuery = true)
     void updateChunkMetadataOnly(
             @Param("id") Long id,
             @Param("content") String content,
@@ -276,4 +302,32 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
             @Param("subsectionTitle") String subsectionTitle,
             @Param("subSubsectionTitle") String subSubsectionTitle
     );
+
+    /**
+     * Encontra todos os chunks que ainda não têm um question_vector,
+     * mas que TÊM um texto de 'question' para ser vetorizado.
+     *
+     * 🚀 MODIFICADO: Retorna uma Projeção leve (id, question) para evitar
+     * o bug do Hibernate ao carregar a entidade inteira com campos float[].
+     */
+    @Query("SELECT c.id as id, c.question as question FROM ContentChunk c " +
+            "WHERE c.questionVector IS NULL AND c.question IS NOT NULL AND c.question != ''")
+    List<ChunkBackfillProjection> findChunksNeedingQuestionVectorBackfill();
+
+    /**
+     * 🚀 NOVO MÉTODO:
+     * Atualiza o question_vector de um único chunk via query nativa.
+     * É mais seguro e rápido para o backfill do que salvar a entidade.
+     */
+    @Modifying
+    @Query(value = "UPDATE content_chunks SET question_vector = CAST(:vectorStr AS vector) WHERE id = :id", nativeQuery = true)
+    void setQuestionVector(@Param("id") Long id, @Param("vectorStr") String vectorStr);
+
+
+    /**
+     * Conta quantos chunks se encaixam na regra de backfill.
+     * (Este método está correto, mantenha-o)
+     */
+    @Query("SELECT COUNT(c) FROM ContentChunk c WHERE c.questionVector IS NULL AND c.question IS NOT NULL AND c.question != ''")
+    long countChunksNeedingQuestionVectorBackfill();
 }

@@ -51,6 +51,10 @@ public class ContentChunk {
     @Basic(fetch = FetchType.LAZY)
     private float[] contentVector;
 
+    @Column(name = "question_vector", columnDefinition = "vector(768)") // Mesma dimensão
+    @Basic(fetch = FetchType.LAZY)
+    private float[] questionVector;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "work_id", nullable = false)
     @JsonBackReference("work-chunks")

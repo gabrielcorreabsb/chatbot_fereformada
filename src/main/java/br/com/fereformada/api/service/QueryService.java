@@ -595,31 +595,46 @@ public class QueryService {
             return Collections.emptyList();
         }
 
-        // Buscar mais resultados inicialmente para melhor reranking
-        // APLICANDO FILTROS:
-        List<Object[]> rawChunkResults = contentChunkRepository.findSimilarChunksRaw(
-                questionVector.toString(),
-                5,
-                filter.obraAcronimo(),      // NOVO (pode ser null)
-                filter.capitulo(),        // NOVO (pode ser null)
-                filter.secaoOuVersiculo() // NOVO (pode ser null)
-        );
-        List<ContextItem> chunkItems = convertRawChunkResultsToContextItems(rawChunkResults);
+        // ======================================================
+        // 🚀 LÓGICA DE BUSCA DUPLA
+        // ======================================================
 
-        // APLICANDO FILTROS:
+        // 1. Buscar Chunks por CONTENT vector
+        List<Object[]> rawContentResults = contentChunkRepository.findSimilarChunksRaw(
+                questionVector.toString(),
+                5, // Aumente para 10 se quiser mais candidatos
+                filter.obraAcronimo(),
+                filter.capitulo(),
+                filter.secaoOuVersiculo()
+        );
+        List<ContextItem> contentItems = convertRawChunkResultsToContextItems(rawContentResults);
+
+        // 2. Buscar Chunks por QUESTION vector (Nova query)
+        List<Object[]> rawQuestionResults = contentChunkRepository.findSimilarChunksByQuestionVector(
+                questionVector.toString(),
+                5, // Aumente para 10 se quiser mais candidatos
+                filter.obraAcronimo(),
+                filter.capitulo(),
+                filter.secaoOuVersiculo()
+        );
+        List<ContextItem> questionItems = convertRawChunkResultsToContextItems(rawQuestionResults);
+
+        // 3. Buscar Notas (Lógica existente)
         List<Object[]> rawNoteResults = studyNoteRepository.findSimilarNotesRaw(
                 questionVector.toString(),
-                5,
-                filter.livroBiblico(),    // NOVO (pode ser null)
-                filter.capitulo(),        // NOVO (pode ser null)
-                filter.secaoOuVersiculo() // NOVO (pode ser null)
+                5, // Aumente para 10
+                filter.livroBiblico(),
+                filter.capitulo(),
+                filter.secaoOuVersiculo()
         );
         List<ContextItem> noteItems = convertRawNoteResultsToContextItems(rawNoteResults);
 
-        // Combinar e retornar todos (o reranking será feito depois)
+        // 4. Combinar e retornar todos
         List<ContextItem> combinedItems = new ArrayList<>();
-        combinedItems.addAll(chunkItems);
-        combinedItems.addAll(noteItems);
+        combinedItems.addAll(contentItems);   // Resultados do Vetor 1
+        combinedItems.addAll(questionItems);  // Resultados do Vetor 2
+        combinedItems.addAll(noteItems);      // Resultados das Notas
+        // ======================================================
 
         return combinedItems;
     }

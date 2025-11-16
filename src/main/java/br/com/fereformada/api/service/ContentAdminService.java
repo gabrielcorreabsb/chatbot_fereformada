@@ -265,7 +265,21 @@ public class ContentAdminService {
             Set<Topic> topics = new HashSet<>(topicRepository.findAllById(dto.topicIds()));
             chunk.setTopics(topics);
         }
-        vectorizeChunk(chunk); // GERA O VETOR
+
+        // ======================================================
+        // 🚀 LÓGICA DE VETORIZAÇÃO SUBSTITUÍDA
+        // ======================================================
+        // vectorizeChunk(chunk); // <-- REMOVER ISSO
+
+        // Gerar embedding para o CONTEÚDO
+        PGvector contentVec = geminiApiClient.generateEmbedding(dto.content());
+        chunk.setContentVector(contentVec != null ? contentVec.toArray() : null);
+
+        // Gerar embedding para a PERGUNTA
+        PGvector questionVec = geminiApiClient.generateEmbedding(dto.question());
+        chunk.setQuestionVector(questionVec != null ? questionVec.toArray() : null);
+        // ======================================================
+
         ContentChunk savedChunk = contentChunkRepository.save(chunk);
         return new ChunkResponseDTO(savedChunk);
     }
@@ -284,20 +298,27 @@ public class ContentAdminService {
             // 3. CAMINHO A: O conteúdo mudou. Re-vetorizar e atualizar tudo.
             logger.info("Conteúdo do Chunk {} mudou. Re-vetorizando...", chunkId);
 
-            // 3a. Gera o novo vetor
-            String textToEmbed = (dto.question() != null ? dto.question() + "\n" : "") +
-                    (dto.content() != null ? dto.content() : "");
-            PGvector newVector = geminiApiClient.generateEmbedding(textToEmbed);
-            String vectorString = (newVector != null) ? newVector.toString() : null;
+            // ======================================================
+            // 🚀 LÓGICA DE VETORIZAÇÃO ATUALIZADA
+            // ======================================================
+            // 3a. Gera os novos vetores
+            PGvector contentVec = geminiApiClient.generateEmbedding(dto.content());
+            PGvector questionVec = geminiApiClient.generateEmbedding(dto.question());
 
-            // 3b. Chama a query de update COM vetor
+            String contentVecStr = (contentVec != null) ? contentVec.toString() : null;
+            String questionVecStr = (questionVec != null) ? questionVec.toString() : null;
+            // ======================================================
+
+
+            // 3b. Chama a query de update COM vetor (agora com 2 vetores)
             contentChunkRepository.updateChunkWithVector(
                     chunkId,
                     dto.content(), dto.question(),
                     dto.sectionTitle(), dto.chapterTitle(),
                     dto.chapterNumber(), dto.sectionNumber(),
                     dto.subsectionTitle(), dto.subSubsectionTitle(),
-                    vectorString
+                    contentVecStr,   // Vetor de conteúdo
+                    questionVecStr   // 🚀 Vetor de pergunta
             );
         } else {
             // 4. CAMINHO B: O conteúdo NÃO mudou. Atualizar só metadados.
@@ -421,9 +442,12 @@ public class ContentAdminService {
             // 3. Montar o texto para vetorização
             String textToEmbed = buildTextToEmbed(dto);
 
-            // 4. Gerar o embedding (VETORIZAÇÃO NA INGESTÃO!)
-            PGvector pgVector = geminiApiClient.generateEmbedding(textToEmbed);
-            float[] vector = (pgVector != null) ? pgVector.toArray() : null;
+            // 4. Gerar os embeddings (SEPARADAMENTE)
+            PGvector contentVec = geminiApiClient.generateEmbedding(dto.content());
+            PGvector questionVec = geminiApiClient.generateEmbedding(dto.question());
+
+            float[] contentVector = (contentVec != null) ? contentVec.toArray() : null;
+            float[] questionVector = (questionVec != null) ? questionVec.toArray() : null;
 
             // 5. Criar a entidade ContentChunk
             ContentChunk chunk = new ContentChunk();
@@ -437,7 +461,8 @@ public class ContentAdminService {
             chunk.setQuestion(dto.question());
             chunk.setContent(dto.content());
             chunk.setTopics(topics);
-            chunk.setContentVector(vector); // Vetor é salvo aqui!
+            chunk.setContentVector(contentVector); // 🚀 Salva vetor 1
+            chunk.setQuestionVector(questionVector); // 🚀 Salva vetor 2
 
             // 6. Salvar
             contentChunkRepository.save(chunk);
