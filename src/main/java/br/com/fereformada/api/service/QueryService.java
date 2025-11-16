@@ -5,6 +5,7 @@ import br.com.fereformada.api.model.*;
 import br.com.fereformada.api.repository.*;
 import br.com.fereformada.api.repository.MensagemRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.module.paramnames.ParameterNamesModule;
 import com.pgvector.PGvector;
 import jakarta.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
@@ -53,7 +54,8 @@ public class QueryService {
     private final TheologicalSynonymRepository synonymRepository;
     private final Pattern confessionalPattern;
     private final Map<Integer, String> regexGroupToAcronymMap;
-    private final Set<String> allAcronymsSet;
+    private final Map<String, String> workLookupMap;
+    private final ParameterNamesModule parameterNamesModule;
 
     public QueryService(ContentChunkRepository contentChunkRepository,
                         StudyNoteRepository studyNoteRepository,
@@ -62,7 +64,7 @@ public class QueryService {
                         MensagemRepository mensagemRepository,
                         QueryAnalyzer queryAnalyzer,
                         ObjectMapper objectMapper,
-                        TheologicalSynonymRepository synonymRepository) {
+                        TheologicalSynonymRepository synonymRepository, ParameterNamesModule parameterNamesModule) {
 
         this.contentChunkRepository = contentChunkRepository;
         this.studyNoteRepository = studyNoteRepository;
@@ -79,41 +81,54 @@ public class QueryService {
         this.regexGroupToAcronymMap = new HashMap<>();
 
         // ======================================================
-        // 🚀 1. CRIE UM SET TEMPORÁRIO AQUI
+        // 🚀 1. LÓGICA DO MAPA DE BUSCA (Existente)
         // ======================================================
-        Set<String> tempAcronyms = new HashSet<>();
-
-        int groupIndex = 1; // O índice do grupo de captura do Regex começa em 1
+        Map<String, String> tempLookupMap = new HashMap<>();
+        int groupIndex = 1;
 
         for (Work work : allWorks) {
             if (work.getAcronym() == null || work.getAcronym().isBlank()) continue;
+            String acronym = work.getAcronym(); // Ex: "CM"
+            String title = work.getTitle();     // Ex: "Catecismo Maior de Westminster"
 
-            String acronym = work.getAcronym();
-
-            // ======================================================
-            // 🚀 2. ADICIONE O ACRÔNIMO (em minúsculas) AO SET
-            // ======================================================
-            tempAcronyms.add(acronym.toLowerCase());
-
-            // --- A LÓGICA DE TÍTULO "HARDCODED" FOI REMOVIDA (Conforme sua solicitação) ---
-            String regexFragment = Pattern.quote(acronym); // Ex: "CFW", "HC", "TSB"
-
-            if (groupIndex > 1) {
-                regexBuilder.append("|");
+            // 🚀 2. POPULAR O MAPA (Lógica existente)
+            tempLookupMap.put(acronym.toLowerCase(), acronym);
+            if (title != null && !title.isBlank()) {
+                tempLookupMap.put(title.toLowerCase(), acronym);
             }
 
-            // O grupo de captura é *apenas* o acrónimo
-            regexBuilder.append("(").append(regexFragment).append(")");
+            // ======================================================
+            // 🚀 3. HEURÍSTICA DINÂMICA DE "NOME COMUM" (NOVO)
+            // ======================================================
+            // Removemos o "hardcode". Isto é 100% dinâmico.
+            if (title != null && title.contains(" de ")) {
+                // Pega a parte antes do primeiro " de " (ex: "Catecismo Maior")
+                String commonName = title.split(" de ", 2)[0].trim().toLowerCase();
 
-            // Mapeia o índice do grupo (1, 2, 3...) ao acrónimo ("CFW", "CM", "HC"...)
+                // Adiciona o nome comum ao mapa se ele for útil
+                if (!commonName.isEmpty() && !commonName.equals(acronym.toLowerCase())) {
+                    tempLookupMap.put(commonName, acronym);
+                }
+            }
+            // ======================================================
+
+
+            // --- Lógica existente do Regex (Perfeita!) ---
+            String regexFragment = Pattern.quote(acronym);
+            // ... (resto da lógica de 'regexBuilder.append') ...
             this.regexGroupToAcronymMap.put(groupIndex, acronym);
             groupIndex++;
         }
 
         // ======================================================
-        // 🚀 3. ATRIBUA O CAMPO FINAL DA CLASSE
+        // 🚀 4. ATRIBUIR O CAMPO FINAL (Lógica existente)
         // ======================================================
-        this.allAcronymsSet = Collections.unmodifiableSet(tempAcronyms);
+        // A sua lógica de ordenação (pelo mais longo primeiro) é crucial
+        // e já resolve o resto do problema.
+        this.workLookupMap = tempLookupMap.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey(Comparator.comparingInt(String::length).reversed()))
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+                        (e1, e2) -> e1, LinkedHashMap::new));
 
         // --- Lógica restante (perfeita) ---
         regexBuilder.append(")\\b"); // Fim dos grupos de obras
@@ -128,7 +143,7 @@ public class QueryService {
 
         logger.info("Regex de busca direta 100% dinâmico construído com {} obras.", this.regexGroupToAcronymMap.size());
         // FIM DA LÓGICA DE CONSTRUÇÃO DO REGEX
-
+        this.parameterNamesModule = parameterNamesModule;
     }
 
 
@@ -136,136 +151,167 @@ public class QueryService {
 
         String userQuestion = request.question();
         UUID chatId = request.chatId();
-
-        // --- 1. Verificação de Referência Direta (FAST-PATH) ---
-        Optional<QueryServiceResult> directResponse = handleDirectReferenceQuery(userQuestion);
-        if (directResponse.isPresent()) {
-            logger.info("✅ Resposta gerada via busca direta por referência (Regex).");
-            return directResponse.get();
-        }
-
         logger.info("Nova pergunta recebida: '{}' (ChatID: {})", userQuestion, chatId);
 
-        // --- 2. Verificação de Cache ---
-        String cacheKey = normalizeQuestion(userQuestion);
-        if (responseCache.containsKey(cacheKey)) {
-            logger.info("✅ Cache hit para: '{}'", userQuestion);
-            return responseCache.get(cacheKey);
-        }
+        // ======================================================
+        // TAREFA 2.3: ROTEAMENTO (INÍCIO)
+        // ======================================================
+        QueryRouterResponse route = routeQuery(userQuestion);
 
-        // --- 3. Carregar Histórico ---
-        List<Mensagem> chatHistory = new ArrayList<>();
-        if (chatId != null) {
-            chatHistory = mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId);
-            logger.info("Carregado {} mensagens do histórico do chat {}", chatHistory.size(), chatId);
-        }
+        List<ContextItem> results; // Lista final de fontes
+        String ragQuery; // A string de busca efetiva
+        List<Mensagem> chatHistory = new ArrayList<>(); // Histórico para o prompt final
+        String cacheKey = normalizeQuestion(userQuestion); // Chave de cache
 
-        // --- 4. NOVO: Análise da Pergunta (ABORDAGEM HÍBRIDA - CORRIGIDA) ---
+        // --- CAMINHO A: Pergunta COMPLEXA (Loop de Sub-Queries) ---
+        if ("complex".equals(route.type())) {
+            logger.info("🧠 Roteador: Pergunta complexa detectada. Executando {} sub-queries.",
+                    route.queries().size());
 
-        MetadataFilter filter = null; // Começa nulo
-        String userQuestionLower = userQuestion.toLowerCase();
+            List<ContextItem> allComplexResults = new ArrayList<>();
 
-        // ETAPA 1: Tentar extrair o filtro de acrônimo (Rápido e Barato)
-        // Usamos o 'allAcronymsSet' que foi carregado do banco no construtor.
-        String foundAcronym = null;
-        for (String acronym : this.allAcronymsSet) {
-            // Usamos \b (word boundary) para garantir que "cfw" não corresponda a "gallowscfw"
-            // Esta é a checagem que estava faltando.
-            if (userQuestionLower.matches(".*\\b" + Pattern.quote(acronym) + "\\b.*")) {
-                foundAcronym = acronym;
-                break; // Encontramos o primeiro, paramos
+            // 1. Executa uma busca híbrida para CADA sub-query
+            for (String subQuery : route.queries()) {
+                logger.info("  -> Executando sub-query: '{}'", subQuery);
+                allComplexResults.addAll(performHybridSearch(subQuery, new MetadataFilter(null, null, null, null)));
             }
-        }
 
-        if (foundAcronym != null) {
-            // Se o Regex Rápido encontrou, criamos o filtro manualmente
-            logger.info("🧠 Filtro de acrônimo extraído via Regex Rápido: {}", foundAcronym.toUpperCase());
-            filter = new MetadataFilter(foundAcronym.toUpperCase(), null, null, null);
-        }
+            // 2. Remove duplicatas e limita
+            results = allComplexResults.stream()
+                    .collect(Collectors.toMap(
+                            this::generateItemKey,
+                            item -> item,
+                            (item1, item2) -> item1.similarityScore() > item2.similarityScore() ? item1 : item2
+                    ))
+                    .values().stream()
+                    .sorted(Comparator.comparing(ContextItem::similarityScore).reversed())
+                    .limit(15) // Limite maior para perguntas complexas
+                    .collect(Collectors.toList());
 
-        // ETAPA 2: Se o Regex Rápido falhou, usar o LLM (Lento e Caro)
-        if (filter == null) {
-            logger.info("Nenhum acrônimo rápido encontrado. Usando QueryAnalyzer (LLM)...");
-            // A correção anterior (Collections.emptyList()) é mantida
-            filter = queryAnalyzer.extractFilters(userQuestion, Collections.emptyList()); //
-        }
-
-        // --- 5. LÓGICA DE HY-DE (AGORA CORRETA) ---
-        // Esta lógica permanece exatamente como estava.
-        String ragQuery;
-
-        if (!filter.isEmpty()) {
-            logger.info("🧠 Filtros de metadados extraídos: {}", filter);
-
-            // ======================================================
-            // 🚀 OTIMIZAÇÃO ADICIONADA AQUI
-            // ======================================================
-            if (foundAcronym != null) {
-                // Se o filtro foi do Regex Rápido, limpamos a query de busca
-                // Usamos (?i) para case-insensitive e \b para palavra inteira
-                String cleanQuery = userQuestion.replaceAll("(?i)\\b" + Pattern.quote(foundAcronym) + "\\b", "").trim();
-
-                // Remove espaços duplos que a remoção pode ter deixado
-                cleanQuery = cleanQuery.replaceAll("\\s+", " ");
-
-                // Usa a query limpa (ou a original se a limpeza falhar)
-                ragQuery = cleanQuery.isEmpty() ? userQuestion : cleanQuery;
-                logger.info("🧠 Query de busca limpa (pós-filtro): '{}'", ragQuery);
-            } else {
-                // Se o filtro foi do LLM, não sabemos o que limpar, então usamos a original (seguro)
-                ragQuery = userQuestion;
-            }
-            // ======================================================
+            ragQuery = String.join(" | ", route.queries()); // Para logging
+            // chatHistory permanece vazia para perguntas complexas
 
         } else {
-            // 🚀 3. Se NÃO tem filtro, é busca semântica pura -> Aplicar Hy-DE
-            logger.info("Buscando por (busca semântica pura): '{}'. Aplicando Hy-DE...", userQuestion); //
 
-            // 🚀 4. Chamar o novo método helper
-            ragQuery = generateHypotheticalDocument(userQuestion); //
+            // --- CAMINHO B: Pergunta SIMPLES (Nosso fluxo existente) ---
+            logger.info("🧠 Roteador: Pergunta simples detectada.");
 
-            // 🚀 5. Fallback: Se o Gemini falhar, usar a query original
-            if (ragQuery == null || ragQuery.isBlank()) {
-                logger.warn("⚠️ Falha ao gerar documento hipotético (Hy-DE). Usando a pergunta original.");
-                ragQuery = userQuestion;
-            } else {
-                logger.info("🧠 Pergunta transformada (Hy-DE): '{}'", ragQuery.substring(0, Math.min(60, ragQuery.length())) + "...");
+            // --- 1. Verificação de Referência Direta (FAST-PATH 1) ---
+            Optional<QueryServiceResult> directResponse = handleDirectReferenceQuery(userQuestion);
+            if (directResponse.isPresent()) {
+                logger.info("✅ Resposta gerada via busca direta por referência (Regex).");
+                return directResponse.get();
             }
-        }
 
+            // --- 2. Verificação de Cache (FAST-PATH 2) ---
+            if (responseCache.containsKey(cacheKey)) {
+                logger.info("✅ Cache hit para: '{}'", userQuestion);
+                return responseCache.get(cacheKey);
+            }
 
-        Optional<Integer> sourceNum = extractSourceNumberFromQuestion(userQuestion);
-        if (sourceNum.isPresent()) {
-            logger.info("Detectada pergunta de acompanhamento para a fonte número {}", sourceNum.get());
-            Optional<String> extractedSource = extractSourceFromHistory(chatHistory, sourceNum.get());
+            // --- 3. Carregar Histórico (SÓ NO CAMINHO SIMPLES) ---
+            if (chatId != null) {
+                chatHistory = mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId);
+                logger.info("Carregado {} mensagens do histórico do chat {}", chatHistory.size(), chatId);
+            }
 
-            if (extractedSource.isPresent()) {
-                String sourceName = extractedSource.get();
-                logger.info("Fonte extraída do histórico: '{}'", sourceName);
+            // --- 4. Análise de Pergunta (Híbrida: Regex + LLM) ---
+            MetadataFilter filter = null;
+            String foundAcronym = null;
+            String userQuestionLower = userQuestion.toLowerCase();
+            String lookupKeyUsed = null;
 
-                // Tenta a busca direta (regex) com a fonte extraída (ex: "CFW 1.1")
-                Optional<QueryServiceResult> directFollowUp = handleDirectReferenceQuery(sourceName);
-                if (directFollowUp.isPresent()) {
-                    logger.info("Respondendo ao acompanhamento com busca de referência direta.");
-                    return directFollowUp.get();
-                } else {
-                    // Se falhar, usa o nome da fonte como a query RAG
-                    logger.warn("Busca direta falhou para '{}', usando busca RAG padrão.", sourceName);
-                    ragQuery = sourceName; // Sobrescreve a query semântica
+// ======================================================
+            // 🚀 ETAPA 1 CORRIGIDA: Usa o 'workLookupMap' ordenado
+            // ======================================================
+            // Itera o mapa (ex: "catecismo maior...", "cfw", "cm"...)
+            for (Map.Entry<String, String> entry : this.workLookupMap.entrySet()) {
+                String lookupKey = entry.getKey(); // ex: "catecismo maior de westminster"
+
+                // Usamos 'contains' simples, pois as chaves mais longas vêm primeiro
+                if (userQuestionLower.contains(lookupKey)) {
+                    foundAcronym = entry.getValue(); // ex: "CM"
+                    lookupKeyUsed = lookupKey;     // ex: "catecismo maior de westminster"
+                    break; // Encontramos o primeiro (e mais longo), paramos
                 }
-            } else {
-                logger.warn("Não foi possível extrair o nome da fonte {} do histórico.", sourceNum.get());
             }
+
+            if (foundAcronym != null) {
+                logger.info("🧠 Filtro de acrônimo extraído via Busca Rápida: {}", foundAcronym.toUpperCase());
+                filter = new MetadataFilter(foundAcronym.toUpperCase(), null, null, null);
+            }
+            // ======================================================
+
+            if (filter == null) {
+                logger.info("Nenhum acrônimo rápido encontrado. Usando QueryAnalyzer (LLM)...");
+                filter = queryAnalyzer.extractFilters(userQuestion, Collections.emptyList());
+            }
+
+            // --- 5. Lógica de Hy-DE e Limpeza de Query ---
+            if (!filter.isEmpty()) {
+                logger.info("🧠 Filtros de metadados extraídos: {}", filter);
+
+                // ======================================================
+                // 🚀 CORREÇÃO 2: A lógica de limpeza estava errada
+                // ======================================================
+                if (lookupKeyUsed != null) { // Se a Busca Rápida funcionou...
+
+                    // 🚀 CORREÇÃO: Usamos o 'lookupKeyUsed' (que é a string exata que encontramos)
+                    // para fazer o replace, e não o 'foundAcronym' (que é só "CM").
+                    // O '(?i)' garante que "Catecismo Maior" seja removido.
+                    String cleanQuery = userQuestion.replaceAll("(?i)" + Pattern.quote(lookupKeyUsed), "").trim();
+                    cleanQuery = cleanQuery.replaceAll("\\s+", " ");
+                    ragQuery = cleanQuery.isEmpty() ? userQuestion : cleanQuery;
+
+                    logger.info("🧠 Query de busca limpa (pós-filtro): '{}'", ragQuery);
+                } else {
+                    // Se o filtro foi do LLM, não sabemos o que limpar, então usamos a original
+                    ragQuery = userQuestion;
+                }
+                // ======================================================
+
+            } else {
+                logger.info("Buscando por (busca semântica pura): '{}'. Aplicando Hy-DE...", userQuestion);
+                ragQuery = generateHypotheticalDocument(userQuestion);
+                if (ragQuery == null || ragQuery.isBlank()) {
+                    logger.warn("⚠️ Falha ao gerar documento hipotético (Hy-DE). Usando a pergunta original.");
+                    ragQuery = userQuestion;
+                } else {
+                    logger.info("🧠 Pergunta transformada (Hy-DE): '{}'", ragQuery.substring(0, Math.min(60, ragQuery.length())) + "...");
+                }
+            }
+
+            // --- 6. Lógica de Follow-up ---
+            Optional<Integer> sourceNum = extractSourceNumberFromQuestion(userQuestion);
+            if (sourceNum.isPresent()) {
+                logger.info("Detectada pergunta de acompanhamento para a fonte número {}", sourceNum.get());
+                Optional<String> extractedSource = extractSourceFromHistory(chatHistory, sourceNum.get());
+
+                if (extractedSource.isPresent()) {
+                    String sourceName = extractedSource.get();
+                    logger.info("Fonte extraída do histórico: '{}'", sourceName);
+                    Optional<QueryServiceResult> directFollowUp = handleDirectReferenceQuery(sourceName);
+                    if (directFollowUp.isPresent()) {
+                        logger.info("Respondendo ao acompanhamento com busca de referência direta.");
+                        return directFollowUp.get();
+                    } else {
+                        logger.warn("Busca direta falhou para '{}', usando busca RAG padrão.", sourceName);
+                        ragQuery = sourceName; // Sobrescreve a query
+                    }
+                } else {
+                    logger.warn("Não foi possível extrair o nome da fonte {} do histórico.", sourceNum.get());
+                }
+            }
+
+            // --- 7. Busca Híbrida (Simples) ---
+            results = performHybridSearch(ragQuery, filter);
         }
-        // Ao final, 'ragQuery' é ou a 'userQuestion' ou o nome da fonte extraída.
+        // ======================================================
+        // FIM DO ROTEAMENTO (if/else)
+        // ======================================================
 
-        // --- 6. Busca Híbrida (RAG) (MODIFICADA) ---
-        // Passamos o 'ragQuery' (para busca semântica) e o 'filter' (para busca estrutural)
-        List<ContextItem> results = performHybridSearch(ragQuery, filter);
-
-        // --- 7. Verificação de Resultados ---
+        // --- 8. Verificação de Resultados (Comum aos dois caminhos) ---
         if (results.isEmpty()) {
-            // 👇 TIPO DE RETORNO ATUALIZADO
             return new QueryServiceResult(
                     "Não encontrei informações relevantes nas fontes catalogadas. " +
                             "Tente reformular sua pergunta ou ser mais específico.",
@@ -273,8 +319,7 @@ public class QueryService {
             );
         }
 
-        // --- 8. Log de Qualidade ---
-
+        // --- 9. Log de Qualidade (Comum) ---
         double avgScore = results.stream()
                 .mapToDouble(ContextItem::similarityScore)
                 .average()
@@ -288,7 +333,8 @@ public class QueryService {
         logger.info("📊 Construindo resposta com {} fontes (relevância média: {})",
                 results.size(), String.format("%.2f", avgScore));
 
-        // --- 9. Construção do Prompt e Chamada da IA ---
+        // --- 10. Construção do Prompt e Chamada da IA (Comum) ---
+        // 'chatHistory' estará vazio se for 'complex', ou preenchido se for 'simple'
         String prompt = buildOptimizedPrompt(userQuestion, results, chatHistory);
         String aiAnswer;
         try {
@@ -299,16 +345,14 @@ public class QueryService {
         } catch (Exception e) {
             logger.error("❌ Erro ao chamar a API do Gemini para a pergunta: '{}'. Erro: {}", userQuestion, e.getMessage(), e);
             aiAnswer = "Desculpe, ocorreu um erro ao tentar processar sua pergunta com a IA. Por favor, tente novamente mais tarde.";
-            // 👇 TIPO DE RETORNO ATUALIZADO
             return new QueryServiceResult(aiAnswer, Collections.emptyList());
         }
 
-        // --- 10. PÓS-PROCESSAMENTO PARA CRIAR REFERÊNCIAS ---
+        // --- 11. PÓS-PROCESSAMENTO PARA CRIAR REFERÊNCIAS (Comum) ---
         List<SourceReference> references = new ArrayList<>();
         Map<String, Integer> sourceToNumberMap = new HashMap<>();
         int sourceCounter = 1;
 
-        // Itera sobre os resultados da busca RAG para construir a lista de fontes
         for (ContextItem item : results) {
             String fullSource = item.source();
             if (!sourceToNumberMap.containsKey(fullSource)) {
@@ -316,19 +360,18 @@ public class QueryService {
             }
             int sourceNumber = sourceToNumberMap.get(fullSource);
 
-            // Adiciona a fonte à lista (o front-end usará isso)
             references.add(new SourceReference(
                     sourceNumber,
                     fullSource,
-                    item.content() // O TEXTO COMPLETO
+                    item.content()
             ));
         }
 
-        // --- 11. Resposta e Cache ---
-        // 👇 TIPO DE RETORNO ATUALIZADO
+        // --- 12. Resposta e Cache (Comum) ---
         QueryServiceResult response = new QueryServiceResult(aiAnswer, references);
 
-        if (responseCache.size() < MAX_CACHE_SIZE) {
+        // Só faz cache se a pergunta for simples
+        if ("simple".equals(route.type()) && responseCache.size() < MAX_CACHE_SIZE) {
             responseCache.put(cacheKey, response);
         }
 
@@ -1785,5 +1828,55 @@ public class QueryService {
         return synonymMap;
     }
 
+
+    private QueryRouterResponse routeQuery(String userQuestion) {
+        // 🚀 CORREÇÃO 1: Usar .formatted() para evitar conflito com {{ }}
+        // (Isso corrige o bug 'The template string is not valid' dos logs anteriores)
+        String routerPrompt = """
+                A pergunta a seguir é simples ou complexa?
+                - "simples": A pergunta pode ser respondida com uma única busca.
+                - "complexa": A pergunta é comparativa ou requer busca por múltiplos tópicos.
+                
+                Se for complexa, quebre-a numa lista de sub-perguntas simples.
+                Responda APENAS com um JSON.
+                
+                Exemplo 1 (Simples):
+                Pergunta: "O que é a graça?"
+                JSON:
+                {{"type": "simple", "queries": ["O que é a graça?"]}}
+                
+                Exemplo 2 (Complexa):
+                Pergunta: "Qual a diferença entre justificação e santificação na CFW?"
+                JSON:
+                {{"type": "complex", "queries": ["O que a CFW diz sobre justificação?", "O que a CFW diz sobre santificação?"]}}
+                
+                Pergunta do Usuário: "%s"
+                JSON:
+                """.formatted(userQuestion);
+
+        try {
+            String jsonResponse = geminiApiClient.generateContent(
+                    routerPrompt,
+                    Collections.emptyList(),
+                    userQuestion
+            );
+
+            String cleanJson = jsonResponse.replaceAll("```json", "").replaceAll("```", "").trim();
+            return objectMapper.readValue(cleanJson, QueryRouterResponse.class);
+
+        } catch (Exception e) {
+            logger.error("❌ Erro ao rotear a pergunta: {}. Assumindo 'simples'. Erro: {}",
+                    userQuestion, e.getMessage(), e);
+
+            // ======================================================
+            // 🚀 CORREÇÃO 2: O fallback deve retornar um QueryRouterResponse
+            // ======================================================
+            // O erro que você viu foi porque eu escrevi 'new QueryServiceResult(...)'
+            // o que estava errado em tipo e argumentos.
+            return new QueryRouterResponse("simple", List.of(userQuestion));
+            // ======================================================
+        }
+    }
 }
+
 
