@@ -36,7 +36,7 @@ public class QueryController {
 
         // 3. Converte a lista de SourceReference (objetos) em uma lista de String (nomes)
         List<String> sourceNames = result.references().stream()
-                .map(SourceReference::sourceName) // Pega apenas o nome de cada fonte
+                .map(SourceReference::text)
                 .collect(Collectors.toList());
 
         // 4. Retorna o DTO ANTIGO (QueryResponse), como o método promete

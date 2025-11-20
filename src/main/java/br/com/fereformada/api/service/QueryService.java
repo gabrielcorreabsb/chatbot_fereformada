@@ -360,11 +360,19 @@ public class QueryService {
             }
             int sourceNumber = sourceToNumberMap.get(fullSource);
 
-            references.add(new SourceReference(
-                    sourceNumber,
-                    fullSource,
-                    item.content()
-            ));
+            // --- MUDANÇA AQUI ---
+            // Agora construímos um SourceReference rico para o Frontend criar links
+            SourceReference ref = SourceReference.builder()
+                    .number(sourceNumber)
+                    .text(fullSource)
+                    .preview(limitContent(item.content(), 200)) // Preview de texto
+                    .sourceId(item.originalId())      // ID Original (ex: 154)
+                    .type(item.sourceType())          // Tipo (ex: "CHUNK")
+                    .label(item.referenceLabel())     // Label (ex: "CFW 1.1")
+                    .metadata(item.metadata())        // Metadados (ex: {slug: "cfw", chapter: 1})
+                    .build();
+
+            references.add(ref);
         }
 
         // --- 12. Resposta e Cache (Comum) ---
@@ -1560,11 +1568,16 @@ public class QueryService {
 
             // Criamos uma entidade 'ContentChunk' "falsa" (leve)
             // apenas para o construtor do ContextItem.
+            // Criamos uma entidade 'ContentChunk' "falsa" (leve)
             ContentChunk chunkShell = new ContentChunk();
             chunkShell.setId(directHit.id());
             chunkShell.setContent(directHit.content());
             chunkShell.setQuestion(directHit.question());
-            chunkShell.setWork(work); // Passamos a Work completa
+            chunkShell.setWork(work);
+
+            // IMPORTANTE: Preencher capítulo/seção para o ContextItem gerar o metadata corretamente
+            chunkShell.setChapterNumber(chapterOrQuestion);
+            chunkShell.setSectionNumber(section);
             // ======================================================
 
             // ======================================================
@@ -1602,7 +1615,16 @@ public class QueryService {
                     focusedPrompt, Collections.emptyList(), userQuestion
             );
 
-            SourceReference ref = new SourceReference(1, context.source(), context.content());
+            // CRIAÇÃO RICA DO LINK (TAREFA 1)
+            SourceReference ref = SourceReference.builder()
+                    .number(1)
+                    .text(context.source())
+                    .preview(context.content())
+                    .sourceId(context.originalId())   // ID para o Frontend
+                    .type(context.sourceType())       // "CHUNK"
+                    .label(context.referenceLabel())  // "CFW 1.1"
+                    .metadata(context.metadata())     // {slug: "cfw", chapter: 1...}
+                    .build();
             QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
             return Optional.of(response);
@@ -1673,7 +1695,16 @@ public class QueryService {
                     focusedPrompt, Collections.emptyList(), userQuestion
             );
 
-            SourceReference ref = new SourceReference(1, context.source(), context.content());
+            // CRIAÇÃO RICA DO LINK (TAREFA 1)
+            SourceReference ref = SourceReference.builder()
+                    .number(1)
+                    .text(context.source())
+                    .preview(context.content())
+                    .sourceId(context.originalId())   // ID da Nota
+                    .type(context.sourceType())       // "NOTE"
+                    .label(context.referenceLabel())  // "Genebra Rm 8:28"
+                    .metadata(context.metadata())     // {book: "Romanos"...}
+                    .build();
             QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
             return Optional.of(response);

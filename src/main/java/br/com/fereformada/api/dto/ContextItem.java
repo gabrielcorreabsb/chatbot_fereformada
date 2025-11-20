@@ -2,91 +2,93 @@ package br.com.fereformada.api.dto;
 
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.StudyNote;
-import br.com.fereformada.api.model.Work; // Import necessário
+import br.com.fereformada.api.model.Work;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * DTO imutável que representa um item de contexto para RAG.
- * ATUALIZADO para suportar boosts dinâmicos (Bloco 1).
+ * ATUALIZADO: Agora carrega metadados ricos para linkagem no Frontend.
  */
 public record ContextItem(
-        Long id,
-        String source,
+        Long id,              // ID do contexto (pode ser igual ao originalId)
+        String source,        // Texto legível da fonte (ex: "CFW 1.1")
         String question,
         String content,
         double similarityScore,
 
-        // --- CAMPOS DE BOOST DINÂMICO (NOMENCLATURA CORRIGIDA) ---
-        boolean isBiblicalNote, // O 'record' cria o método 'isBiblicalNote()' automaticamente
-        String workType,        // "CATECISMO", "CONFISSAO", etc.
-        Integer boostPriority   // 0, 1, 2, 3...
+        // --- NOVOS CAMPOS DE RASTREAMENTO (TAREFA 1) ---
+        Long originalId,              // ID real no banco (ContentChunk.id ou StudyNote.id)
+        String sourceType,            // "CHUNK" ou "NOTE"
+        String referenceLabel,        // Rótulo curto (ex: "CFW 1.1")
+        Map<String, Object> metadata, // Dados para o Frontend criar links
+
+        // --- CAMPOS DE BOOST DINÂMICO ---
+        boolean isBiblicalNote,
+        String workType,
+        Integer boostPriority
 ) {
 
     // --- MÉTODOS DE FÁBRICA ('from') ---
 
     /**
-     * MÉTODO PRINCIPAL PARA ContentChunk (Atualizado)
-     * Aceita os dados dinâmicos da Work.
+     * MÉTODO PRINCIPAL PARA ContentChunk
      */
     public static ContextItem from(ContentChunk chunk, double score, String contextualSource, Work work) {
-        return new ContextItem(
-                chunk.getId(),
-                contextualSource, // Fonte rica em contexto
-                chunk.getQuestion(),
-                chunk.getContent(),
-                score,
-                false, // Não é nota bíblica
-                work.getType(),
-                work.getBoostPriority()
-        );
-    }
+        // 1. Construção dos Metadados para Linkagem
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("workId", work.getId());
+        meta.put("workAcronym", work.getAcronym());
 
-    /**
-     * MÉTODO DE FALLBACK (Atualizado)
-     * Mantido para compatibilidade, também carrega dados de boost.
-     */
-    public static ContextItem from(ContentChunk chunk, double score) {
-        Work work = chunk.getWork();
-        String source;
-        String workType = work.getType() != null ? work.getType() : "";
-
-        // Lógica de 'source' original
-        if ("CATECISMO".equals(workType)) {
-            source = String.format("%s - Pergunta %d",
-                    work.getTitle(),
-                    chunk.getSectionNumber() != null ? chunk.getSectionNumber() : 0
-            );
-        } else if (chunk.getChapterNumber() != null && chunk.getSectionNumber() != null) {
-            source = String.format("%s - Cap. %s, Seção %s",
-                    work.getTitle(),
-                    chunk.getChapterNumber(),
-                    chunk.getSectionNumber()
-            );
+        // CORREÇÃO: Usamos o acrônimo em minúsculo como slug, já que Work não tem getSlug()
+        if (work.getAcronym() != null) {
+            meta.put("workSlug", work.getAcronym().toLowerCase());
         } else {
-            source = work.getTitle() + (chunk.getChapterTitle() != null ? " - " + chunk.getChapterTitle() : "");
+            meta.put("workSlug", "obra-" + work.getId());
         }
 
+        meta.put("chapter", chunk.getChapterNumber());
+        meta.put("section", chunk.getSectionNumber());
+
+        // 2. Definição do Label Curto
+        String label = (work.getAcronym() != null ? work.getAcronym() : "DOC") + " " +
+                (chunk.getChapterNumber() != null ? chunk.getChapterNumber() : "") +
+                (chunk.getSectionNumber() != null ? "." + chunk.getSectionNumber() : "");
+
         return new ContextItem(
                 chunk.getId(),
-                source,
+                contextualSource,
                 chunk.getQuestion(),
                 chunk.getContent(),
                 score,
-                false, // Não é nota bíblica
+                // Novos Campos
+                chunk.getId(),
+                "CHUNK",
+                label.trim(),
+                meta,
+                // Campos Antigos
+                false,
                 work.getType(),
                 work.getBoostPriority()
         );
     }
 
     /**
-     * Método de fábrica para StudyNote (Atualizado)
-     * Preenche os novos campos com valores fixos.
+     * MÉTODO DE FALLBACK (Compatibilidade)
+     */
+    public static ContextItem from(ContentChunk chunk, double score) {
+        // Recupera a Work de dentro do chunk para garantir acesso aos dados
+        return from(chunk, score, chunk.getWork().getTitle(), chunk.getWork());
+    }
+
+    /**
+     * MÉTODO DE FÁBRICA PARA StudyNote
      */
     public static ContextItem from(StudyNote note, double score) {
         String source = String.format("Bíblia de Genebra - %s %d:%d",
-                note.getBook(),
-                note.getStartChapter(),
-                note.getStartVerse()
-        );
+                note.getBook(), note.getStartChapter(), note.getStartVerse());
+
         // Lógica de formatação de versículo final
         if (note.getStartVerse() != note.getEndVerse() || note.getStartChapter() != note.getEndChapter()) {
             if (note.getStartChapter() == note.getEndChapter()) {
@@ -96,31 +98,44 @@ public record ContextItem(
             }
         }
 
+        // 1. Construção dos Metadados
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("book", note.getBook());
+        meta.put("chapter", note.getStartChapter());
+        meta.put("verse", note.getStartVerse());
+
         return new ContextItem(
                 note.getId(),
                 source,
-                null, // StudyNotes não têm 'question'
+                null,
                 note.getNoteContent(),
                 score,
-                true, // É uma nota bíblica
-                "NOTAS_BIBLICAS", // Tipo fixo
-                3 // Prioridade máxima fixa (Opção 1)
+                // Novos Campos
+                note.getId(),
+                "NOTE",
+                "Genebra " + note.getBook() + " " + note.getStartChapter(), // Label curto
+                meta,
+                // Campos Antigos
+                true,
+                "NOTAS_BIBLICAS",
+                3
         );
     }
 
     // --- MÉTODOS AUXILIARES ---
 
-    /**
-     * Cria uma nova instância com score ajustado (Atualizado).
-     */
     public ContextItem withAdjustedScore(double newScore) {
         return new ContextItem(
                 this.id,
                 this.source,
                 this.question,
                 this.content,
-                newScore,
-                this.isBiblicalNote, // Propaga o valor
+                newScore, // Score novo
+                this.originalId, // Propaga
+                this.sourceType, // Propaga
+                this.referenceLabel, // Propaga
+                this.metadata, // Propaga
+                this.isBiblicalNote,
                 this.workType,
                 this.boostPriority
         );
@@ -130,29 +145,10 @@ public record ContextItem(
         return this.question != null && !this.question.isEmpty();
     }
 
-    public String getContentPreview(int maxLength) {
-        if (content == null || content.isEmpty()) return "";
-        return content.length() <= maxLength ? content : content.substring(0, maxLength) + "...";
-    }
+    public String workType() { return this.workType; }
 
-    // --- MÉTODOS CORRIGIDOS ---
-
-    // O método 'isBiblicalNote()' é criado automaticamente pelo 'record'.
-    // O @Override que causou o erro 1 foi REMOVIDO.
-
-    /**
-     * Retorna o tipo de fonte (lendo o campo dinâmico).
-     */
-    public String getSourceType() {
-        return this.workType;
-    }
-
-    /**
-     * Override toString para melhor logging (Atualizado).
-     */
-    @Override // @Override aqui está CORRETO
+    @Override
     public String toString() {
-        return String.format("ContextItem{id=%d, source='%s', score=%.3f, type=%s, boost=%d}",
-                id, source, similarityScore, workType, boostPriority != null ? boostPriority : -1);
+        return String.format("ContextItem{id=%d, label='%s', score=%.3f}", id, referenceLabel, similarityScore);
     }
 }
