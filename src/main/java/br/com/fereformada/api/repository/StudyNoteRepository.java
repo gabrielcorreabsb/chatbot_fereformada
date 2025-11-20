@@ -1,5 +1,6 @@
 package br.com.fereformada.api.repository;
 
+import br.com.fereformada.api.dto.ReaderNoteDTO;
 import br.com.fereformada.api.dto.StudyNoteProjection;
 import br.com.fereformada.api.dto.StudyNoteSourceDTO;
 import br.com.fereformada.api.model.StudyNote;
@@ -263,4 +264,19 @@ public interface StudyNoteRepository extends JpaRepository<StudyNote, Long> {
     void deleteNoteByIdBypassingLoad(@Param("id") Long id);
 
     long countByNoteVectorIsNull();
+
+    @Query("""
+        SELECT new br.com.fereformada.api.dto.ReaderNoteDTO(
+            n.id,
+            n.noteContent,
+            n.startVerse,
+            n.endVerse
+        )
+        FROM StudyNote n
+        WHERE LOWER(n.book) = LOWER(:book)
+        AND n.startChapter = :chapter
+        ORDER BY n.startVerse ASC
+    """)
+    List<ReaderNoteDTO> findNotesForReader(@Param("book") String book,
+                                           @Param("chapter") Integer chapter);
 }

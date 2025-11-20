@@ -14,7 +14,9 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
+import java.time.OffsetDateTime;
 import java.util.*;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -56,15 +58,16 @@ public class QueryService {
     private final Map<Integer, String> regexGroupToAcronymMap;
     private final Map<String, String> workLookupMap;
     private final ParameterNamesModule parameterNamesModule;
+    private final ConversaRepository conversaRepository;
 
     public QueryService(ContentChunkRepository contentChunkRepository,
                         StudyNoteRepository studyNoteRepository,
-                        WorkRepository workRepository, // Já está injetado
+                        WorkRepository workRepository,
                         GeminiApiClient geminiApiClient,
                         MensagemRepository mensagemRepository,
                         QueryAnalyzer queryAnalyzer,
                         ObjectMapper objectMapper,
-                        TheologicalSynonymRepository synonymRepository, ParameterNamesModule parameterNamesModule) {
+                        TheologicalSynonymRepository synonymRepository, ParameterNamesModule parameterNamesModule, ConversaRepository conversaRepository) {
 
         this.contentChunkRepository = contentChunkRepository;
         this.studyNoteRepository = studyNoteRepository;
@@ -74,6 +77,7 @@ public class QueryService {
         this.queryAnalyzer = queryAnalyzer;
         this.objectMapper = objectMapper;
         this.synonymRepository = synonymRepository;
+        this.conversaRepository = conversaRepository;
 
         // INÍCIO DA LÓGICA DE CONSTRUÇÃO DO REGEX DINÂMICO
         List<Work> allWorks = workRepository.findAll();
@@ -375,8 +379,37 @@ public class QueryService {
             references.add(ref);
         }
 
-        // --- 12. Resposta e Cache (Comum) ---
+        // --- 12. Resposta e Cache ---
         QueryServiceResult response = new QueryServiceResult(aiAnswer, references);
+
+        // =================================================================
+        // 💾 LÓGICA DE SALVAMENTO (ADICIONAR ISTO)
+        // =================================================================
+        if (chatId != null) {
+            try {
+                // 1. Tenta buscar a conversa (se não existir, loga erro)
+                Conversa conversation = conversaRepository.findById(chatId)
+                        .orElseThrow(() -> new EntityNotFoundException("Conversa não encontrada para ID: " + chatId));
+
+                // 2. Cria e salva a Mensagem da IA
+                Mensagem aiMsg = new Mensagem();
+                aiMsg.setConversa(conversation);
+                aiMsg.setRole("assistant");
+                aiMsg.setContent(aiAnswer);
+                aiMsg.setCreatedAt(OffsetDateTime.now());
+
+                // 🚀 AQUI ESTÁ A MÁGICA: SALVAR AS REFERÊNCIAS 🚀
+                aiMsg.setReferences(references);
+
+                mensagemRepository.save(aiMsg);
+                logger.info("✅ Mensagem da IA salva com {} referências.", references.size());
+
+            } catch (Exception e) {
+                logger.error("❌ Erro ao salvar mensagem no histórico: {}", e.getMessage());
+                // Não lançamos exceção para não travar a resposta ao usuário
+            }
+        }
+        // =================================================================
 
         // Só faz cache se a pergunta for simples
         if ("simple".equals(route.type()) && responseCache.size() < MAX_CACHE_SIZE) {

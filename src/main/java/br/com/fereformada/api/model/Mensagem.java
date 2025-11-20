@@ -1,5 +1,7 @@
 package br.com.fereformada.api.model;
 
+import br.com.fereformada.api.dto.SourceReference;
+import br.com.fereformada.api.util.SourceReferenceConverter;
 import com.fasterxml.jackson.annotation.JsonBackReference;
 import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
@@ -7,6 +9,7 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -38,5 +41,9 @@ public class Mensagem {
     protected void onCreate() {
         createdAt = OffsetDateTime.now();
     }
+
+    @Column(name = "source_references", columnDefinition = "TEXT")
+    @Convert(converter = SourceReferenceConverter.class)
+    private List<SourceReference> references;
 
 }

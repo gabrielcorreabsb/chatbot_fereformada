@@ -3,6 +3,7 @@ package br.com.fereformada.api.repository;
 import br.com.fereformada.api.dto.ChunkProjection;
 import br.com.fereformada.api.dto.ChunkTopicProjection;
 import br.com.fereformada.api.dto.ContentCountByWorkDTO;
+import br.com.fereformada.api.dto.ReaderChunkDTO;
 import br.com.fereformada.api.model.ContentChunk;
 import br.com.fereformada.api.model.Topic;
 import jakarta.persistence.EntityNotFoundException;
@@ -330,4 +331,20 @@ public interface ContentChunkRepository extends JpaRepository<ContentChunk, Long
      */
     @Query("SELECT COUNT(c) FROM ContentChunk c WHERE c.questionVector IS NULL AND c.question IS NOT NULL AND c.question != ''")
     long countChunksNeedingQuestionVectorBackfill();
+
+    @Query("""
+        SELECT new br.com.fereformada.api.dto.ReaderChunkDTO(
+            c.id, 
+            c.content, 
+            c.sectionNumber,
+            c.chapterNumber
+        )
+        FROM ContentChunk c
+        JOIN c.work w
+        WHERE LOWER(w.acronym) = LOWER(:acronym)
+        AND c.chapterNumber = :chapter
+        ORDER BY c.sectionNumber ASC
+    """)
+    List<ReaderChunkDTO> findContentForReader(@Param("acronym") String acronym,
+                                              @Param("chapter") Integer chapter);
 }

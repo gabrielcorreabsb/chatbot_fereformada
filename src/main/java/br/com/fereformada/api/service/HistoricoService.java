@@ -84,10 +84,16 @@ public class HistoricoService {
         // lançando ResourceNotFoundException ou ForbiddenException se necessário.
         Conversa conversa = findAndVerifyOwnership(chatId, userId);
 
-        // Se chegou aqui, o usuário é o dono. Busca as mensagens.
-        return mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId)
-                .stream()
-                .map(msg -> new MensagemDTO(msg.getId(), msg.getRole(), msg.getContent()))
+        List<Mensagem> mensagens = mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId);
+
+        return mensagens.stream()
+                .map(msg -> new MensagemDTO(
+                        msg.getId(),
+                        msg.getRole(),
+                        msg.getContent(),
+                        // 🟢 AQUI: Passamos a lista salva no banco para o DTO
+                        msg.getReferences() != null ? msg.getReferences() : List.of()
+                ))
                 .collect(Collectors.toList());
     }
 
@@ -99,5 +105,21 @@ public class HistoricoService {
             throw new ForbiddenException("Acesso negado à conversa: " + chatId);
         }
         return conversa;
+    }
+
+    public List<MensagemDTO> getMensagensPorConversa(UUID chatId) {
+        // Busca as mensagens no banco
+        List<Mensagem> mensagens = mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId);
+
+        // Converte para DTO
+        return mensagens.stream()
+                .map(msg -> new MensagemDTO(
+                        msg.getId(),
+                        msg.getRole(),
+                        msg.getContent(),
+                        // Passa as referências salvas (ou lista vazia se null)
+                        msg.getReferences() != null ? msg.getReferences() : List.of()
+                ))
+                .collect(Collectors.toList());
     }
 }
