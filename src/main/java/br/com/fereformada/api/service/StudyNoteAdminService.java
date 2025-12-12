@@ -11,22 +11,31 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 // import org.springframework.orm.jpa.JpaSystemException; // <-- Não é mais necessário
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class StudyNoteAdminService {
 
+    private static final int BATCH_SIZE = 50;
+
     private final StudyNoteRepository studyNoteRepository;
     private final GeminiApiClient geminiApiClient;
+    private final StudyNoteBatchService studyNoteBatchService;
     private static final Logger logger = LoggerFactory.getLogger(StudyNoteAdminService.class);
 
-    public StudyNoteAdminService(StudyNoteRepository studyNoteRepository, GeminiApiClient geminiApiClient) {
+    public StudyNoteAdminService(StudyNoteRepository studyNoteRepository,
+                                 GeminiApiClient geminiApiClient,
+                                 StudyNoteBatchService studyNoteBatchService) {
         this.studyNoteRepository = studyNoteRepository;
         this.geminiApiClient = geminiApiClient;
+        this.studyNoteBatchService = studyNoteBatchService;
     }
 
     /**
@@ -198,6 +207,94 @@ public class StudyNoteAdminService {
         } catch (Exception e) {
             logger.error("Falha ao vetorizar Nota de Estudo {}: {}", note.getId(), e.getMessage());
             note.setNoteVector(null);
+        }
+    }
+
+    @Async
+    public void importBatchAsync(List<StudyNoteRequestDTO> dtos) {
+        long startTime = System.currentTimeMillis();
+        int total = dtos.size();
+        logger.info("🚀 [ASYNC] Iniciando importação OTIMIZADA de {} notas.", total);
+
+        // Listas temporárias para montar o lote
+        List<StudyNote> notesBatch = new ArrayList<>(BATCH_SIZE);
+        List<String> textsToEmbedBatch = new ArrayList<>(BATCH_SIZE);
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger errorCount = new AtomicInteger(0);
+
+        for (int i = 0; i < total; i++) {
+            StudyNoteRequestDTO dto = dtos.get(i);
+
+            try {
+                // 1. Converte DTO para Entidade (rápido, memória apenas)
+                StudyNote note = new StudyNote();
+                dto.toEntity(note);
+
+                // 2. Prepara o texto para vetorização (mas NÃO chama a API ainda)
+                String textToEmbed = note.getBook() + " " +
+                        note.getStartChapter() + ":" + note.getStartVerse() + "\n" +
+                        note.getNoteContent();
+
+                notesBatch.add(note);
+                textsToEmbedBatch.add(textToEmbed);
+
+                // 3. Se o lote encheu (ou é o último item), processa
+                if (notesBatch.size() >= BATCH_SIZE || i == total - 1) {
+                    processAndSaveBatch(notesBatch, textsToEmbedBatch, successCount, errorCount);
+
+                    // Limpa os baldes para o próximo lote
+                    notesBatch.clear();
+                    textsToEmbedBatch.clear();
+
+                    logger.info("📦 [PROGRESSO] {}/{} notas processadas...", (i + 1), total);
+                }
+
+            } catch (Exception e) {
+                logger.error("❌ Erro estrutural ao preparar item {}: {}", i, e.getMessage());
+                errorCount.incrementAndGet();
+            }
+        }
+
+        long duration = (System.currentTimeMillis() - startTime) / 1000;
+        logger.info("🏁 [FIM] Importação concluída em {}s. Sucessos: {}, Erros: {}",
+                duration, successCount.get(), errorCount.get());
+    }
+
+    /**
+     * Processa um lote: Envia todos os textos para o Gemini de uma vez,
+     * associa os vetores retornados às notas e salva no banco.
+     */
+    private void processAndSaveBatch(List<StudyNote> notes,
+                                     List<String> texts,
+                                     AtomicInteger successCount,
+                                     AtomicInteger errorCount) {
+        try {
+            // A. Vetorização em Lote (1 chamada de rede para N itens)
+            // IMPORTANTE: Assumindo que geminiApiClient.generateEmbeddingsInBatch existe
+            // e retorna a lista na MESMA ORDEM dos textos enviados.
+            List<PGvector> vectors = geminiApiClient.generateEmbeddingsInBatch(texts);
+
+            if (vectors.size() != notes.size()) {
+                throw new IllegalStateException("Discrepância entre notas enviadas e vetores retornados pela API.");
+            }
+
+            // B. Atribui os vetores às entidades
+            for (int k = 0; k < notes.size(); k++) {
+                PGvector pgVector = vectors.get(k);
+                if (pgVector != null) {
+                    notes.get(k).setNoteVector(pgVector.toArray());
+                }
+            }
+
+            // C. Salva no banco (Transacional via BatchService)
+            studyNoteBatchService.saveBatch(notes);
+            successCount.addAndGet(notes.size());
+
+        } catch (Exception e) {
+            logger.error("❌ Falha ao processar lote de vetorização/banco: {}", e.getMessage());
+            // Se falhar o lote inteiro, contamos como erro
+            errorCount.addAndGet(notes.size());
         }
     }
 }

@@ -89,4 +89,20 @@ public class StudyNoteAdminController {
         studyNoteAdminService.delete(id);
         return ResponseEntity.noContent().build();
     }
+
+    @PostMapping("/batch")
+    public ResponseEntity<String> importBatchNotes(@RequestBody List<StudyNoteRequestDTO> dtos) {
+        if (dtos == null || dtos.isEmpty()) {
+            return ResponseEntity.badRequest().body("Lista vazia.");
+        }
+
+        // Dispara o processo em outra thread (Fire-and-forget)
+        studyNoteAdminService.importBatchAsync(dtos);
+
+        // Responde na hora para o usuário não ficar esperando
+        return ResponseEntity.accepted()
+                .body("Importação iniciada em segundo plano! " +
+                        "São " + dtos.size() + " itens. " +
+                        "Acompanhe os logs do servidor para ver o progresso.");
+    }
 }

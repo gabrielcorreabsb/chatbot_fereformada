@@ -27,4 +27,6 @@ public class StudyNoteBatchService {
             studyNoteRepository.saveAll(notes);
         }
     }
+
+
 }
