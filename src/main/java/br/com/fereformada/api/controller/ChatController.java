@@ -32,19 +32,15 @@ public class ChatController {
         Conversa conversa = historicoService.salvarMensagemUsuario(userId, request.question(), request.chatId());
 
         // 2. Chama o QueryService
-        // (O QueryService JÁ ESTÁ SALVANDO a resposta da IA com as referências no banco)
         ChatRequest updatedRequest = new ChatRequest(request.question(), conversa.getId());
         QueryServiceResult queryResult = queryService.query(updatedRequest);
 
-        // 🔴 REMOVIDO: historicoService.salvarMensagemIA(...)
-        // Motivo: O QueryService já salvou a mensagem com as referências.
-        // Se deixarmos essa linha, vai duplicar a mensagem no banco.
-
-        // 3. Retorna a resposta
+        // 3. Retorna a resposta COM O ID DA MENSAGEM
         return new ChatApiResponse(
                 queryResult.answer(),
                 queryResult.references(),
-                conversa.getId()
+                conversa.getId(),
+                queryResult.messageId()
         );
     }
 
@@ -54,13 +50,8 @@ public class ChatController {
         return ResponseEntity.ok(historicoService.getConversasPorUsuario(userId));
     }
 
-    /**
-     * Retorna todas as mensagens de uma conversa específica.
-     */
     @GetMapping("/{chatId}")
     public ResponseEntity<List<MensagemDTO>> getChatHistory(@PathVariable UUID chatId) {
-        // CORREÇÃO: Delegamos a busca para o HistoricoService (que tem acesso ao Repository)
-        // Isso resolve o erro de "mensagemRepository" não encontrado aqui.
         List<MensagemDTO> history = historicoService.getMensagensPorConversa(chatId);
         return ResponseEntity.ok(history);
     }

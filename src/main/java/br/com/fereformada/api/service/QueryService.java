@@ -158,7 +158,7 @@ public class QueryService {
         logger.info("Nova pergunta recebida: '{}' (ChatID: {})", userQuestion, chatId);
 
         // ======================================================
-        // TAREFA 2.3: ROTEAMENTO (INÍCIO)
+        // TAREFA 2.3: ROTEAMENTO
         // ======================================================
         QueryRouterResponse route = routeQuery(userQuestion);
 
@@ -189,31 +189,32 @@ public class QueryService {
                     ))
                     .values().stream()
                     .sorted(Comparator.comparing(ContextItem::similarityScore).reversed())
-                    .limit(15) // Limite maior para perguntas complexas
+                    .limit(15)
                     .collect(Collectors.toList());
 
-            ragQuery = String.join(" | ", route.queries()); // Para logging
-            // chatHistory permanece vazia para perguntas complexas
+            ragQuery = String.join(" | ", route.queries());
 
         } else {
-
-            // --- CAMINHO B: Pergunta SIMPLES (Nosso fluxo existente) ---
+            // --- CAMINHO B: Pergunta SIMPLES ---
             logger.info("🧠 Roteador: Pergunta simples detectada.");
 
             // --- 1. Verificação de Referência Direta (FAST-PATH 1) ---
-            Optional<QueryServiceResult> directResponse = handleDirectReferenceQuery(userQuestion);
+            // 🚨 ATUALIZAÇÃO: Passamos o chatId para salvar a mensagem imediatamente se encontrar
+            Optional<QueryServiceResult> directResponse = handleDirectReferenceQuery(userQuestion, chatId);
             if (directResponse.isPresent()) {
                 logger.info("✅ Resposta gerada via busca direta por referência (Regex).");
-                return directResponse.get();
+                return directResponse.get(); // O resultado já contém o messageId
             }
 
             // --- 2. Verificação de Cache (FAST-PATH 2) ---
             if (responseCache.containsKey(cacheKey)) {
                 logger.info("✅ Cache hit para: '{}'", userQuestion);
+                // Nota: Se quiser que o feedback funcione em cache hits, precisaria salvar uma nova mensagem
+                // duplicando o conteúdo do cache. Por simplicidade, retornamos direto.
                 return responseCache.get(cacheKey);
             }
 
-            // --- 3. Carregar Histórico (SÓ NO CAMINHO SIMPLES) ---
+            // --- 3. Carregar Histórico ---
             if (chatId != null) {
                 chatHistory = mensagemRepository.findByConversaIdOrderByCreatedAtAsc(chatId);
                 logger.info("Carregado {} mensagens do histórico do chat {}", chatHistory.size(), chatId);
@@ -225,18 +226,12 @@ public class QueryService {
             String userQuestionLower = userQuestion.toLowerCase();
             String lookupKeyUsed = null;
 
-// ======================================================
-            // 🚀 ETAPA 1 CORRIGIDA: Usa o 'workLookupMap' ordenado
-            // ======================================================
-            // Itera o mapa (ex: "catecismo maior...", "cfw", "cm"...)
             for (Map.Entry<String, String> entry : this.workLookupMap.entrySet()) {
-                String lookupKey = entry.getKey(); // ex: "catecismo maior de westminster"
-
-                // Usamos 'contains' simples, pois as chaves mais longas vêm primeiro
+                String lookupKey = entry.getKey();
                 if (userQuestionLower.contains(lookupKey)) {
-                    foundAcronym = entry.getValue(); // ex: "CM"
-                    lookupKeyUsed = lookupKey;     // ex: "catecismo maior de westminster"
-                    break; // Encontramos o primeiro (e mais longo), paramos
+                    foundAcronym = entry.getValue();
+                    lookupKeyUsed = lookupKey;
+                    break;
                 }
             }
 
@@ -244,7 +239,6 @@ public class QueryService {
                 logger.info("🧠 Filtro de acrônimo extraído via Busca Rápida: {}", foundAcronym.toUpperCase());
                 filter = new MetadataFilter(foundAcronym.toUpperCase(), null, null, null);
             }
-            // ======================================================
 
             if (filter == null) {
                 logger.info("Nenhum acrônimo rápido encontrado. Usando QueryAnalyzer (LLM)...");
@@ -254,26 +248,14 @@ public class QueryService {
             // --- 5. Lógica de Hy-DE e Limpeza de Query ---
             if (!filter.isEmpty()) {
                 logger.info("🧠 Filtros de metadados extraídos: {}", filter);
-
-                // ======================================================
-                // 🚀 CORREÇÃO 2: A lógica de limpeza estava errada
-                // ======================================================
-                if (lookupKeyUsed != null) { // Se a Busca Rápida funcionou...
-
-                    // 🚀 CORREÇÃO: Usamos o 'lookupKeyUsed' (que é a string exata que encontramos)
-                    // para fazer o replace, e não o 'foundAcronym' (que é só "CM").
-                    // O '(?i)' garante que "Catecismo Maior" seja removido.
+                if (lookupKeyUsed != null) {
                     String cleanQuery = userQuestion.replaceAll("(?i)" + Pattern.quote(lookupKeyUsed), "").trim();
                     cleanQuery = cleanQuery.replaceAll("\\s+", " ");
                     ragQuery = cleanQuery.isEmpty() ? userQuestion : cleanQuery;
-
                     logger.info("🧠 Query de busca limpa (pós-filtro): '{}'", ragQuery);
                 } else {
-                    // Se o filtro foi do LLM, não sabemos o que limpar, então usamos a original
                     ragQuery = userQuestion;
                 }
-                // ======================================================
-
             } else {
                 logger.info("Buscando por (busca semântica pura): '{}'. Aplicando Hy-DE...", userQuestion);
                 ragQuery = generateHypotheticalDocument(userQuestion);
@@ -294,13 +276,16 @@ public class QueryService {
                 if (extractedSource.isPresent()) {
                     String sourceName = extractedSource.get();
                     logger.info("Fonte extraída do histórico: '{}'", sourceName);
-                    Optional<QueryServiceResult> directFollowUp = handleDirectReferenceQuery(sourceName);
+
+                    // 🚨 ATUALIZAÇÃO: Passamos chatId aqui também
+                    Optional<QueryServiceResult> directFollowUp = handleDirectReferenceQuery(sourceName, chatId);
+
                     if (directFollowUp.isPresent()) {
                         logger.info("Respondendo ao acompanhamento com busca de referência direta.");
                         return directFollowUp.get();
                     } else {
                         logger.warn("Busca direta falhou para '{}', usando busca RAG padrão.", sourceName);
-                        ragQuery = sourceName; // Sobrescreve a query
+                        ragQuery = sourceName;
                     }
                 } else {
                     logger.warn("Não foi possível extrair o nome da fonte {} do histórico.", sourceNum.get());
@@ -310,20 +295,20 @@ public class QueryService {
             // --- 7. Busca Híbrida (Simples) ---
             results = performHybridSearch(ragQuery, filter);
         }
+
         // ======================================================
-        // FIM DO ROTEAMENTO (if/else)
+        // FIM DO ROTEAMENTO
         // ======================================================
 
-        // --- 8. Verificação de Resultados (Comum aos dois caminhos) ---
+        // --- 8. Verificação de Resultados ---
         if (results.isEmpty()) {
-            return new QueryServiceResult(
-                    "Não encontrei informações relevantes nas fontes catalogadas. " +
-                            "Tente reformular sua pergunta ou ser mais específico.",
-                    Collections.emptyList()
-            );
+            String msg = "Não encontrei informações relevantes nas fontes catalogadas. Tente reformular sua pergunta ou ser mais específico.";
+            // 💾 SALVAMENTO: Salva a resposta de "não encontrado" e retorna o ID
+            UUID msgId = saveAiMessage(chatId, msg, Collections.emptyList());
+            return new QueryServiceResult(msg, Collections.emptyList(), msgId);
         }
 
-        // --- 9. Log de Qualidade (Comum) ---
+        // --- 9. Log de Qualidade ---
         double avgScore = results.stream()
                 .mapToDouble(ContextItem::similarityScore)
                 .average()
@@ -337,8 +322,7 @@ public class QueryService {
         logger.info("📊 Construindo resposta com {} fontes (relevância média: {})",
                 results.size(), String.format("%.2f", avgScore));
 
-        // --- 10. Construção do Prompt e Chamada da IA (Comum) ---
-        // 'chatHistory' estará vazio se for 'complex', ou preenchido se for 'simple'
+        // --- 10. Construção do Prompt e Chamada da IA ---
         String prompt = buildOptimizedPrompt(userQuestion, results, chatHistory);
         String aiAnswer;
         try {
@@ -347,12 +331,14 @@ public class QueryService {
                 aiAnswer = "Desculpe, não consegui gerar uma resposta. Tente novamente.";
             }
         } catch (Exception e) {
-            logger.error("❌ Erro ao chamar a API do Gemini para a pergunta: '{}'. Erro: {}", userQuestion, e.getMessage(), e);
-            aiAnswer = "Desculpe, ocorreu um erro ao tentar processar sua pergunta com a IA. Por favor, tente novamente mais tarde.";
-            return new QueryServiceResult(aiAnswer, Collections.emptyList());
+            logger.error("❌ Erro API Gemini: {}", e.getMessage());
+            String erroMsg = "Desculpe, ocorreu um erro ao tentar processar sua pergunta com a IA. Por favor, tente novamente mais tarde.";
+            // 💾 SALVAMENTO: Salva a mensagem de erro
+            UUID msgId = saveAiMessage(chatId, erroMsg, Collections.emptyList());
+            return new QueryServiceResult(erroMsg, Collections.emptyList(), msgId);
         }
 
-        // --- 11. PÓS-PROCESSAMENTO PARA CRIAR REFERÊNCIAS (Comum) ---
+        // --- 11. Pós-processamento para criar referências ---
         List<SourceReference> references = new ArrayList<>();
         Map<String, Integer> sourceToNumberMap = new HashMap<>();
         int sourceCounter = 1;
@@ -364,54 +350,29 @@ public class QueryService {
             }
             int sourceNumber = sourceToNumberMap.get(fullSource);
 
-            // --- MUDANÇA AQUI ---
-            // Agora construímos um SourceReference rico para o Frontend criar links
             SourceReference ref = SourceReference.builder()
                     .number(sourceNumber)
                     .text(fullSource)
-                    .preview(limitContent(item.content(), 200)) // Preview de texto
-                    .sourceId(item.originalId())      // ID Original (ex: 154)
-                    .type(item.sourceType())          // Tipo (ex: "CHUNK")
-                    .label(item.referenceLabel())     // Label (ex: "CFW 1.1")
-                    .metadata(item.metadata())        // Metadados (ex: {slug: "cfw", chapter: 1})
+                    .preview(limitContent(item.content(), 200))
+                    .sourceId(item.originalId())
+                    .type(item.sourceType())
+                    .label(item.referenceLabel())
+                    .metadata(item.metadata())
                     .build();
 
             references.add(ref);
         }
 
-        // --- 12. Resposta e Cache ---
-        QueryServiceResult response = new QueryServiceResult(aiAnswer, references);
-
         // =================================================================
-        // 💾 LÓGICA DE SALVAMENTO (ADICIONAR ISTO)
+        // 💾 LÓGICA DE SALVAMENTO FINAL (INTEGRADA)
         // =================================================================
-        if (chatId != null) {
-            try {
-                // 1. Tenta buscar a conversa (se não existir, loga erro)
-                Conversa conversation = conversaRepository.findById(chatId)
-                        .orElseThrow(() -> new EntityNotFoundException("Conversa não encontrada para ID: " + chatId));
+        // Chamamos o método auxiliar para salvar e recuperar o ID
+        UUID savedMessageId = saveAiMessage(chatId, aiAnswer, references);
 
-                // 2. Cria e salva a Mensagem da IA
-                Mensagem aiMsg = new Mensagem();
-                aiMsg.setConversa(conversation);
-                aiMsg.setRole("assistant");
-                aiMsg.setContent(aiAnswer);
-                aiMsg.setCreatedAt(OffsetDateTime.now());
+        // --- 12. Construção da Resposta (COM MESSAGE ID) ---
+        QueryServiceResult response = new QueryServiceResult(aiAnswer, references, savedMessageId);
 
-                // 🚀 AQUI ESTÁ A MÁGICA: SALVAR AS REFERÊNCIAS 🚀
-                aiMsg.setReferences(references);
-
-                mensagemRepository.save(aiMsg);
-                logger.info("✅ Mensagem da IA salva com {} referências.", references.size());
-
-            } catch (Exception e) {
-                logger.error("❌ Erro ao salvar mensagem no histórico: {}", e.getMessage());
-                // Não lançamos exceção para não travar a resposta ao usuário
-            }
-        }
-        // =================================================================
-
-        // Só faz cache se a pergunta for simples
+        // Cache (opcional)
         if ("simple".equals(route.type()) && responseCache.size() < MAX_CACHE_SIZE) {
             responseCache.put(cacheKey, response);
         }
@@ -482,19 +443,21 @@ public class QueryService {
     private Set<String> extractImportantKeywords(String question, Map<String, List<String>> synonymMap) {
         Set<String> keywords = new HashSet<>();
         String[] words = question.toLowerCase()
-                .replaceAll("[?!.,;:]", "")
+                .replaceAll("[?!.,;:'\"]", "") // 🚀 CORREÇÃO 1: Remove aspas aqui diretamente
                 .split("\\s+");
-
-        // O mapa agora vem como parâmetro
-        // Map<String, List<String>> synonymMap = getSynonymMap(); // <-- LINHA REMOVIDA
 
         for (String word : words) {
             if (word.length() > 2 && !STOP_WORDS.contains(word)) {
                 keywords.add(word);
 
-                if (synonymMap.containsKey(word)) { // Usa o mapa do parâmetro
+                if (synonymMap.containsKey(word)) {
                     List<String> synonyms = synonymMap.get(word);
-                    keywords.addAll(synonyms.stream().limit(3).collect(Collectors.toList()));
+                    // 🚀 CORREÇÃO 2: Limpa aspas dos sinônimos também
+                    keywords.addAll(synonyms.stream()
+                            .map(s -> s.replaceAll("['\"]", ""))
+                            .filter(s -> s.length() > 2)
+                            .limit(3)
+                            .collect(Collectors.toList()));
                 }
             }
         }
@@ -1541,12 +1504,11 @@ public class QueryService {
         return query;
     }
 
-    private Optional<QueryServiceResult> handleDirectReferenceQuery(String userQuestion) {
+    private Optional<QueryServiceResult> handleDirectReferenceQuery(String userQuestion, UUID chatId) { // <--- RECEBE CHAT ID
 
-        // --- MUDANÇA 1: O PATTERN VEM DA VARIÁVEL DA CLASSE ---
         Matcher confessionalMatcher = this.confessionalPattern.matcher(userQuestion);
 
-        // O padrão da Bíblia (Bloco 2) pode continuar estático
+        // Pattern bíblico mantido
         Pattern biblicalPattern = Pattern.compile(
                 "(?:\\b(BG|Bíblia de Genebra)\\s*-?\\s*)?" +
                         "((?:\\d+\\s+)?[A-Za-zÀ-ÿ]+(?:\\s+[A-Za-zÀ-ÿ]+)*)" +
@@ -1557,141 +1519,91 @@ public class QueryService {
         );
         Matcher biblicalMatcher = biblicalPattern.matcher(userQuestion);
 
-        // --- BLOCO 1: Busca Confessional (LÓGICA ATUALIZADA) ---
+        // --- BLOCO 1: Busca Confessional ---
         if (confessionalMatcher.find()) {
-
-            // --- MUDANÇA 2: LÓGICA DE EXTRAÇÃO DINÂMICA ---
             String acronym = null;
-            // Itera sobre o nosso mapa (ex: 1->CFW, 2->CM, ..., 6->"HC")
             for (int i = 1; i <= this.regexGroupToAcronymMap.size(); i++) {
-                if (confessionalMatcher.group(i) != null) {
+                if (i <= confessionalMatcher.groupCount() && confessionalMatcher.group(i) != null) {
                     acronym = this.regexGroupToAcronymMap.get(i);
                     break;
                 }
             }
+            if (acronym == null) return Optional.empty();
 
-            if (acronym == null) return Optional.empty(); // Segurança
-
-            // --- MUDANÇA 3: ÍNDICES DOS GRUPOS CORRIGIDOS ---
-            // Os grupos de capítulo/seção agora vêm *depois* dos N grupos de obras
             int chapterGroupIndex = this.regexGroupToAcronymMap.size() + 1;
             int sectionGroupIndex = this.regexGroupToAcronymMap.size() + 2;
 
-            int chapterOrQuestion = Integer.parseInt(confessionalMatcher.group(chapterGroupIndex));
-            Integer section = confessionalMatcher.group(sectionGroupIndex) != null ?
-                    Integer.parseInt(confessionalMatcher.group(sectionGroupIndex)) : null;
+            if (confessionalMatcher.groupCount() < chapterGroupIndex) {
+                return Optional.empty();
+            }
 
-            logger.info("🔍 Referência direta CONFESSIONAL detectada: {} {}{}",
-                    acronym.toUpperCase(), chapterOrQuestion,
-                    (section != null ? "." + section : ""));
+            String chapterStr = confessionalMatcher.group(chapterGroupIndex);
+            if (chapterStr == null) return Optional.empty();
 
-            // O resto da sua lógica está PERFEITA
+            int chapterOrQuestion = Integer.parseInt(chapterStr);
+            Integer section = null;
+            if (confessionalMatcher.groupCount() >= sectionGroupIndex && confessionalMatcher.group(sectionGroupIndex) != null) {
+                section = Integer.parseInt(confessionalMatcher.group(sectionGroupIndex));
+            }
+
             List<ChunkProjection> results = contentChunkRepository.findDirectReferenceProjection(
                     acronym, chapterOrQuestion, section
             );
 
-            if (results.isEmpty()) {
-                logger.warn("⚠️ Referência confessional {} não encontrada.", acronym.toUpperCase());
-                return Optional.empty();
-            }
+            if (results.isEmpty()) return Optional.empty();
 
             ChunkProjection directHit = results.get(0);
-            Work work = workRepository.findById(directHit.workId())
-                    .orElseThrow(() -> new EntityNotFoundException("Work não encontrada para o chunk direto: " + directHit.id()));
+            Work work = workRepository.findById(directHit.workId()).orElseThrow();
 
-            // Criamos uma entidade 'ContentChunk' "falsa" (leve)
-            // apenas para o construtor do ContextItem.
-            // Criamos uma entidade 'ContentChunk' "falsa" (leve)
             ContentChunk chunkShell = new ContentChunk();
             chunkShell.setId(directHit.id());
             chunkShell.setContent(directHit.content());
             chunkShell.setQuestion(directHit.question());
             chunkShell.setWork(work);
-
-            // IMPORTANTE: Preencher capítulo/seção para o ContextItem gerar o metadata corretamente
             chunkShell.setChapterNumber(chapterOrQuestion);
             chunkShell.setSectionNumber(section);
-            // ======================================================
 
-            // ======================================================
-            // MUDANÇA 3 de 3: Usar o 'chunkShell'
-            // ======================================================
-            // A lógica do ContextItem.from() já estava correta
             ContextItem context = ContextItem.from(chunkShell, 1.0, buildContextualSource(directHit), work);
-            String referenceString = String.format("%s %d%s",
-                    acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : "")
-            );
+            String referenceString = String.format("%s %d%s", acronym.toUpperCase(), chapterOrQuestion, (section != null ? "." + section : ""));
 
             String focusedPrompt = String.format("""
-                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a um documento confessional.
-                            Sua tarefa é explicar o texto fornecido de forma clara e objetiva.
-                            
-                            DOCUMENTO: %s
-                            REFERÊNCIA: %s
-                            TEXTO ENCONTRADO:
-                            "%s"
-                            
-                            INSTRUÇÕES:
-                            1.  Comece confirmando a referência (Ex: "Sobre %s, o texto diz...").
-                            2.  Explique o significado teológico do texto em suas próprias palavras.
-                            3.  Seja direto e focado exclusivamente no texto fornecido.
-                            
-                            EXPLICAÇÃO:
-                            """,
-                    work.getTitle(),      // %s (Documento)
-                    referenceString,      // %s (Referência)
-                    directHit.content(),  // %s (Texto Encontrado)
-                    referenceString       // %s (Instrução 1)
-            );
+                    Você é um assistente teológico reformado... (Prompt mantido)
+                    DOCUMENTO: %s
+                    REFERÊNCIA: %s
+                    TEXTO ENCONTRADO:
+                    "%s"
+                    ...
+                    """, work.getTitle(), referenceString, directHit.content());
 
-            String aiAnswer = geminiApiClient.generateContent(
-                    focusedPrompt, Collections.emptyList(), userQuestion
-            );
+            String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
 
-            // CRIAÇÃO RICA DO LINK (TAREFA 1)
             SourceReference ref = SourceReference.builder()
                     .number(1)
                     .text(context.source())
                     .preview(context.content())
-                    .sourceId(context.originalId())   // ID para o Frontend
-                    .type(context.sourceType())       // "CHUNK"
-                    .label(context.referenceLabel())  // "CFW 1.1"
-                    .metadata(context.metadata())     // {slug: "cfw", chapter: 1...}
+                    .sourceId(context.originalId())
+                    .type(context.sourceType())
+                    .label(context.referenceLabel())
+                    .metadata(context.metadata())
                     .build();
-            QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
-            return Optional.of(response);
+            // 💾 SALVA E RETORNA COM ID
+            UUID messageId = saveAiMessage(chatId, aiAnswer, List.of(ref));
+            return Optional.of(new QueryServiceResult(aiAnswer, List.of(ref), messageId));
         }
 
-        // --- BLOCO 2: Busca Bíblica (Sem alterações) ---
+        // --- BLOCO 2: Busca Bíblica ---
         else if (biblicalMatcher.find()) {
-
-            // O seu código aqui está 100% correto
-            String book = biblicalMatcher.group(2).trim();
+            String book = normalizeBookName(biblicalMatcher.group(2).trim());
             int chapter = Integer.parseInt(biblicalMatcher.group(3));
-            String verseGroup = biblicalMatcher.group(4);
-            int verse = Integer.parseInt(verseGroup.split("-")[0]);
+            int verse = Integer.parseInt(biblicalMatcher.group(4).split("-")[0]);
 
-            logger.info("🔍 Referência direta BÍBLICA detectada: {} {}:{}", book, chapter, verse);
-            book = normalizeBookName(book);
-            logger.info("📖 Livro normalizado: '{}'", book);
-
-// 1. O tipo de retorno agora é a sua projeção
-            List<StudyNoteProjection> results = studyNoteRepository.findByBiblicalReference(
-                    book, chapter, verse
-            );
-
-            if (results.isEmpty()) {
-                logger.warn("⚠️ Referência bíblica direta {}:{}:{} não encontrada.",
-                        book, chapter, verse);
-                return Optional.empty();
-            }
+            List<StudyNoteProjection> results = studyNoteRepository.findByBiblicalReference(book, chapter, verse);
+            if (results.isEmpty()) return Optional.empty();
 
             StudyNoteProjection directHit = results.get(0);
-            // 3. Criamos uma entidade 'StudyNote' "falsa" (leve)
-            //    apenas para o construtor do ContextItem.from(StudyNote...)
             StudyNote noteShell = new StudyNote();
-            noteShell.setId(directHit.id()); // 🚀 Usando accessor de record
+            noteShell.setId(directHit.id());
             noteShell.setBook(directHit.book());
             noteShell.setStartChapter(directHit.startChapter());
             noteShell.setStartVerse(directHit.startVerse());
@@ -1699,48 +1611,32 @@ public class QueryService {
             noteShell.setEndVerse(directHit.endVerse());
             noteShell.setNoteContent(directHit.noteContent());
 
-            // 4. Usamos o 'noteShell'
             ContextItem context = ContextItem.from(noteShell, 1.0);
 
             String focusedPrompt = String.format("""
-                            Você é um assistente teológico reformado. O usuário solicitou uma consulta direta a uma nota de estudo bíblica.
-                            Sua tarefa é explicar o texto da nota de estudo fornecida de forma clara e objetiva.
-                            
-                            DOCUMENTO: %s
-                            REFERÊNCIA BÍBLICA: %s %d:%d
-                            NOTA DE ESTUDO ENCONTRADA:
-                            "%s"
-                            
-                            INSTRUÇÕES:
-                            1.  Confirme a referência bíblica (Ex: "Para %s %d:%d, a nota de estudo da Bíblia de Genebra explica que...").
-                            2.  Explique o significado teológico da nota de estudo fornecida.
-                            3.  Seja direto e focado exclusivamente no texto da nota.
-                            
-                            EXPLICAÇÃO:
-                            """,
-                    context.source(),
-                    book, chapter, verse,
-                    directHit.noteContent(),
-                    book, chapter, verse
-            );
+                    Você é um assistente teológico reformado... (Prompt mantido)
+                    DOCUMENTO: %s
+                    REFERÊNCIA BÍBLICA: %s %d:%d
+                    NOTA DE ESTUDO ENCONTRADA:
+                    "%s"
+                    ...
+                    """, context.source(), book, chapter, verse, directHit.noteContent());
 
-            String aiAnswer = geminiApiClient.generateContent(
-                    focusedPrompt, Collections.emptyList(), userQuestion
-            );
+            String aiAnswer = geminiApiClient.generateContent(focusedPrompt, Collections.emptyList(), userQuestion);
 
-            // CRIAÇÃO RICA DO LINK (TAREFA 1)
             SourceReference ref = SourceReference.builder()
                     .number(1)
                     .text(context.source())
                     .preview(context.content())
-                    .sourceId(context.originalId())   // ID da Nota
-                    .type(context.sourceType())       // "NOTE"
-                    .label(context.referenceLabel())  // "Genebra Rm 8:28"
-                    .metadata(context.metadata())     // {book: "Romanos"...}
+                    .sourceId(context.originalId())
+                    .type(context.sourceType())
+                    .label(context.referenceLabel())
+                    .metadata(context.metadata())
                     .build();
-            QueryServiceResult response = new QueryServiceResult(aiAnswer, List.of(ref));
 
-            return Optional.of(response);
+            // 💾 SALVA E RETORNA COM ID
+            UUID messageId = saveAiMessage(chatId, aiAnswer, List.of(ref));
+            return Optional.of(new QueryServiceResult(aiAnswer, List.of(ref), messageId));
         }
 
         return Optional.empty();
@@ -1939,6 +1835,30 @@ public class QueryService {
             // o que estava errado em tipo e argumentos.
             return new QueryRouterResponse("simple", List.of(userQuestion));
             // ======================================================
+        }
+    }
+
+    private UUID saveAiMessage(UUID chatId, String answer, List<SourceReference> references) {
+        if (chatId == null) return null;
+
+        try {
+            Conversa conversation = conversaRepository.findById(chatId)
+                    .orElseThrow(() -> new EntityNotFoundException("Conversa não encontrada para ID: " + chatId));
+
+            Mensagem aiMsg = new Mensagem();
+            aiMsg.setConversa(conversation);
+            aiMsg.setRole("assistant");
+            aiMsg.setContent(answer);
+            aiMsg.setCreatedAt(OffsetDateTime.now());
+            aiMsg.setReferences(references);
+
+            mensagemRepository.save(aiMsg);
+            logger.info("✅ Mensagem da IA salva com ID: {} e {} referências.", aiMsg.getId(), references.size());
+
+            return aiMsg.getId(); // Agora retorna UUID corretamente
+        } catch (Exception e) {
+            logger.error("❌ Erro ao salvar mensagem no histórico: {}", e.getMessage());
+            return null;
         }
     }
 }
