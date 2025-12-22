@@ -657,8 +657,12 @@ public class QueryService {
         }
 
         // --- 3. Penalidade (Multiplicativa) (Lógica mantida do seu original) ---
-        if (item.content().length() < 100) {
-            finalScore *= 0.9; // Penalidade de 10%
+        boolean isShort = item.content().length() < 100;
+        boolean isImmuneToPenalty = item.isBiblicalNote() ||
+                (item.workType() != null && item.workType().contains("CATECISMO"));
+
+        if (isShort && !isImmuneToPenalty) { // <--- Adicione esta verificação
+            finalScore *= 0.9;
             logger.debug("    -> PENALTY Conteúdo Curto");
         }
 
@@ -842,70 +846,53 @@ public class QueryService {
 
     private String buildOptimizedPrompt(String question, List<ContextItem> items, List<Mensagem> chatHistory) {
         StringBuilder context = new StringBuilder();
-        StringBuilder sourceMapping = new StringBuilder();
 
-        // Mapa para rastrear fontes únicas e atribuir um número a elas
-        Map<String, Integer> sourceToNumberMap = new HashMap<>();
-        int sourceCounter = 1;
+        // Set apenas para garantir que não enviamos texto duplicado para a IA ler
+        Set<String> processedSources = new HashSet<>();
 
-        context.append("FONTES DISPONÍVEIS PARA CONSULTA:\n\n");
+        context.append("### CONTEXTO (FONTES DISPONÍVEIS) ###\n\n");
 
-        // 1. Constrói o contexto
         for (ContextItem item : items) {
             String fullSource = item.source();
 
-            if (!sourceToNumberMap.containsKey(fullSource)) {
-                sourceToNumberMap.put(fullSource, sourceCounter);
-                sourceCounter++;
+            // Se já adicionamos este conteúdo, pula para economizar tokens
+            if (processedSources.contains(fullSource)) {
+                continue;
             }
+            processedSources.add(fullSource);
 
-            int sourceNumber = sourceToNumberMap.get(fullSource);
-            String sourceId = String.format("[%d]", sourceNumber);
-
-            context.append(String.format("%s\n", sourceId));
+            // Apenas jogamos o conteúdo lá, sem nos preocupar com IDs [1], [2]...
+            context.append("--- Trecho de Fonte ---\n");
             if (item.question() != null && !item.question().isEmpty()) {
-                context.append("    Pergunta Relacionada: ").append(item.question()).append("\n");
+                context.append("Tópico: ").append(item.question()).append("\n");
             }
-            context.append("    Conteúdo: ").append(limitContent(item.content(), 450)).append("\n\n");
+            context.append("Conteúdo: ").append(limitContent(item.content(), 450)).append("\n\n");
         }
 
-        // 2. Constrói o mapa de referência (APENAS PARA A IA LER, NÃO PARA ESCREVER)
-        sourceMapping.append("MAPA DE IDENTIFICAÇÃO DAS FONTES:\n");
-        for (Map.Entry<String, Integer> entry : sourceToNumberMap.entrySet()) {
-            sourceMapping.append(String.format("[%d]: %s\n", entry.getValue(), entry.getKey()));
-        }
-
-        // 3. Constrói o prompt final AJUSTADO
+        // Prompt focado em TEXTO LIMPO
         return String.format("""
-                Você é um assistente de pesquisa teológica focado na Tradição Reformada (Calvinista).
-                
-                **TAREFA:** Responda a PERGUNTA DO USUÁRIO de forma clara, completa e didática, baseando-se **ESTRITAMENTE** nas FONTES DISPONÍVEIS ([1], [2], etc.).
-                
-                **PRINCÍPIOS OBRIGATÓRIOS:**
-                1.  **Fidelidade Absoluta:** Sua resposta deve refletir APENAS o que está nas fontes. Não invente.
-                2.  **Prioridade da Escritura:** Comece com as fontes bíblicas se houver.
-                3.  **Fluidez:** Escreva um texto corrido e natural, bem estruturado em parágrafos.
-                
-                **INSTRUÇÕES DE CITAÇÃO (CRUCIAL):**
-                * Ao usar uma informação, adicione o **número sobrescrito** correspondente ao final da frase (ex: "A graça é um favor imerecido¹.").
-                * Use ¹ para a fonte [1], ² para a fonte [2], etc.
-                * **REGRA DE OURO:** **NÃO** crie uma lista de "Fontes Consultadas" ou bibliografia no final da resposta. O sistema já exibe isso automaticamente para o usuário. Apenas termine a resposta com o ponto final do último parágrafo.
-                
-                **SE O CONTEXTO FOR INSUFICIENTE:**
-                * Se as fontes não responderem a pergunta, diga educadamente que não encontrou informações específicas nos documentos consultados.
-                
-                ---
-                DADOS DE CONTEXTO (Use para compor a resposta):
-                %s
-                ---
-                %s
-                ---
-                
-                **PERGUNTA DO USUÁRIO:**
-                %s
-                
-                **RESPOSTA (Texto corrido com citações sobrescritas, SEM lista final):**
-                """, context.toString(), sourceMapping.toString(), question);
+            Você é um assistente de pesquisa teológica focado na Tradição Reformada (Calvinista).
+            
+            **OBJETIVO:** Responda a PERGUNTA DO USUÁRIO com um texto fluido, bem redigido e natural, baseando-se **ESTRITAMENTE** nas informações fornecidas no CONTEXTO.
+            
+            **REGRAS DE FORMATAÇÃO (CRÍTICAS):**
+            1.  **SEM MARCAÇÕES:** NÃO use números sobrescritos (¹), colchetes ([1]), ou qualquer tipo de referência numérica no meio do texto.
+            2.  **SEM RODAPÉ:** NÃO crie lista de fontes ou bibliografia no final.
+            3.  **ESTILO:** Escreva como um artigo explicativo ou uma resposta direta de chat. O texto deve ser limpo e agradável de ler.
+            
+            **DIRETRIZES DE CONTEÚDO:**
+            *   Use apenas o conhecimento presente no CONTEXTO abaixo.
+            *   Se houver versículos bíblicos no contexto, integre-os naturalmente à explicação.
+            *   Se o contexto não tiver a resposta, diga: "As fontes disponíveis não abordam este tópico específico."
+            
+            %s
+            
+            ---
+            **PERGUNTA DO USUÁRIO:**
+            %s
+            
+            **RESPOSTA:**
+            """, context.toString(), question);
     }
 
     private String limitContent(String content, int maxLength) {
