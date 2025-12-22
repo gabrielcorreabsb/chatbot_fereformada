@@ -4,13 +4,14 @@ import br.com.fereformada.api.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.config.Customizer; // Importante
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer; // Importante
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.web.cors.CorsConfigurationSource;
 
 @Configuration
 @EnableWebSecurity
@@ -18,42 +19,40 @@ import org.springframework.web.cors.CorsConfigurationSource;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
-    private final CorsConfigurationSource corsConfigurationSource;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
-                          CorsConfigurationSource corsConfigurationSource) {
+    // Removemos a injeção do CorsConfigurationSource manual
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
-        this.corsConfigurationSource = corsConfigurationSource;
     }
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-                // ✅ IMPORTANTE: Habilita CORS usando a configuração do WebConfig
-                .cors(cors -> cors.configurationSource(corsConfigurationSource))
-
-                // Desabilita CSRF (não necessário para APIs stateless)
-                .csrf(csrf -> csrf.disable())
-
-                // Define a política de sessão como STATELESS
+                .cors(Customizer.withDefaults())
+                .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-
-                // Define as regras de autorização
                 .authorizeHttpRequests(authz -> authz
-                        // ✅ CRÍTICO: Permite OPTIONS sem autenticação (requisições preflight)
+                        // Swagger e Health Check (público)
+                        .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+
+                        // Permite OPTIONS (Preflight CORS)
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
-                        // Protege sua API v1
-                        .requestMatchers("/api/v1/**").authenticated()
+                        // 🔒 ENDPOINTS PÚBLICOS (sem autenticação)
+                        .requestMatchers("/api/auth/**").permitAll() // Login, registro, etc
 
-                        // Exige autenticação para todos os endpoints de admin
-                        .requestMatchers("/api/admin/**").authenticated()
+                        // 🔐 ENDPOINTS DE USUÁRIO (requer autenticação)
+                        .requestMatchers("/api/chat/**").authenticated()
+                        .requestMatchers("/api/feedback/**").authenticated()
+                        .requestMatchers("/api/query/**").authenticated()
+                        .requestMatchers("/api/leitor/**").authenticated()
 
-                        // Permite todo o resto (ajuste conforme necessário)
-                        .anyRequest().permitAll()
+                        // 👑 ENDPOINTS DE ADMIN (requer role ADMIN ou MODERATOR)
+                        .requestMatchers("/api/admin/**").hasAnyRole("ADMIN", "MODERATOR")
+
+                        // Qualquer outra rota exige autenticação
+                        .anyRequest().authenticated()
                 )
-
-                // Adiciona seu filtro JWT antes do filtro padrão do Spring
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();

@@ -842,7 +842,7 @@ public class QueryService {
 
     private String buildOptimizedPrompt(String question, List<ContextItem> items, List<Mensagem> chatHistory) {
         StringBuilder context = new StringBuilder();
-        StringBuilder sourceMapping = new StringBuilder(); // Este será o nosso "mapa de rodapé"
+        StringBuilder sourceMapping = new StringBuilder();
 
         // Mapa para rastrear fontes únicas e atribuir um número a elas
         Map<String, Integer> sourceToNumberMap = new HashMap<>();
@@ -850,80 +850,61 @@ public class QueryService {
 
         context.append("FONTES DISPONÍVEIS PARA CONSULTA:\n\n");
 
-        // 1. Constrói o contexto e o mapa de fontes
+        // 1. Constrói o contexto
         for (ContextItem item : items) {
-            String fullSource = item.source(); // A FONTE INTACTA
+            String fullSource = item.source();
 
-            // Verifica se já vimos esta fonte
             if (!sourceToNumberMap.containsKey(fullSource)) {
                 sourceToNumberMap.put(fullSource, sourceCounter);
                 sourceCounter++;
             }
 
             int sourceNumber = sourceToNumberMap.get(fullSource);
-            String sourceId = String.format("[%d]", sourceNumber); // [1], [2], etc.
+            String sourceId = String.format("[%d]", sourceNumber);
 
-            // Adiciona ao contexto que a IA vai ler
-            context.append(String.format("%s\n", sourceId)); // [1]
+            context.append(String.format("%s\n", sourceId));
             if (item.question() != null && !item.question().isEmpty()) {
                 context.append("    Pergunta Relacionada: ").append(item.question()).append("\n");
             }
             context.append("    Conteúdo: ").append(limitContent(item.content(), 450)).append("\n\n");
         }
 
-        // 2. Constrói o mapa de referência para o prompt
-        sourceMapping.append("MAPA DE FONTES (Use isto para o rodapé):\n");
+        // 2. Constrói o mapa de referência (APENAS PARA A IA LER, NÃO PARA ESCREVER)
+        sourceMapping.append("MAPA DE IDENTIFICAÇÃO DAS FONTES:\n");
         for (Map.Entry<String, Integer> entry : sourceToNumberMap.entrySet()) {
-            // Ex: [1]: Bíblia de Genebra - Romanos 8:29
             sourceMapping.append(String.format("[%d]: %s\n", entry.getValue(), entry.getKey()));
         }
 
-        // 3. Constrói o prompt final
+        // 3. Constrói o prompt final AJUSTADO
         return String.format("""
-                Você é um assistente de pesquisa teológica focado na Tradição Reformada (Calvinista). Sua função é ajudar os usuários a encontrar informações **detalhadas e precisas** baseadas em fontes confiáveis.
+                Você é um assistente de pesquisa teológica focado na Tradição Reformada (Calvinista).
                 
-                **TAREFA:** Responda a PERGUNTA DO USUÁRIO de forma clara, **completa**, objetiva e prestativa, baseando-se **ESTRITAMENTE** nas FONTES DISPONÍVEIS PARA CONSULTA fornecidas ([1], [2], etc.).
+                **TAREFA:** Responda a PERGUNTA DO USUÁRIO de forma clara, completa e didática, baseando-se **ESTRITAMENTE** nas FONTES DISPONÍVEIS ([1], [2], etc.).
                 
                 **PRINCÍPIOS OBRIGATÓRIOS:**
-                1.  **Fidelidade Absoluta às Fontes:** Sua resposta deve refletir **APENAS** o que está escrito nas fontes. Não adicione interpretações ou informações externas.
-                2.  **Prioridade da Escritura:** Se as fontes bíblicas estiverem disponíveis, comece a resposta com a informação delas.
-                3.  **Clareza e Profundidade:** Seja direto, use linguagem acessível, mas **não simplifique excessivamente**.
+                1.  **Fidelidade Absoluta:** Sua resposta deve refletir APENAS o que está nas fontes. Não invente.
+                2.  **Prioridade da Escritura:** Comece com as fontes bíblicas se houver.
+                3.  **Fluidez:** Escreva um texto corrido e natural, bem estruturado em parágrafos.
                 
-                **REGRAS E RESTRIÇÕES ESTRITAS:**
-                * **NÃO use conhecimento externo.**
-                * **NÃO dê opiniões pessoais.**
-                * **NÃO seja vago.** Use os detalhes específicos das fontes.
-                * **NÃO use um tom professoral.** Seja um assistente prestativo e informativo.
-                
-                **INSTRUÇÕES DE ESTILO E CITAÇÃO (FORMATO DE NOTAS DE RODAPÉ):**
-                * **Tom:** Prestativo, informativo e preciso. Organize a resposta em parágrafos lógicos.
-                * **Citação no Texto:** Ao apresentar uma informação **chave** extraída de uma fonte, adicione um **número sobrescrito** (superscript) no final da frase ou trecho, começando com ¹, depois ², ³ (ex: "A justificação é um ato da livre graça de Deus¹.").
-                * **Mapeamento:** O número sobrescrito (ex: ¹) DEVE CORRESPONDER ao número da fonte no bloco "FONTES DISPONÍVEIS" (ex: [1]).
-                * **Reutilização de Fontes:** Se você usar a mesma fonte (ex: [1]) várias vezes, **use o mesmo número sobrescrito** (ex: ¹) todas as vezes.
-                * **Seção "Fontes Consultadas":** Ao final da sua resposta principal, adicione uma seção `---` e depois `### Fontes Consultadas`. Nesta seção, liste **cada número sobrescrito** usado no texto, seguido pela **FONTE INTACTA (COMPLETA)**, que você deve extrair do "MAPA DE FONTES".
-                    * Exemplo de Rodapé:
-                        ```
-                        ---
-                        ### Fontes Consultadas
-                        ¹ Bíblia de Genebra - Romanos 8:29
-                        ² Teologia Sistemática - D. As Partes da Predestinação.
-                        ```
+                **INSTRUÇÕES DE CITAÇÃO (CRUCIAL):**
+                * Ao usar uma informação, adicione o **número sobrescrito** correspondente ao final da frase (ex: "A graça é um favor imerecido¹.").
+                * Use ¹ para a fonte [1], ² para a fonte [2], etc.
+                * **REGRA DE OURO:** **NÃO** crie uma lista de "Fontes Consultadas" ou bibliografia no final da resposta. O sistema já exibe isso automaticamente para o usuário. Apenas termine a resposta com o ponto final do último parágrafo.
                 
                 **SE O CONTEXTO FOR INSUFICIENTE:**
-                * Se as fontes ([1], [2]...) não responderem **diretamente**, informe isso claramente. Diga: "As fontes consultadas não fornecem uma resposta direta sobre [tópico]." Se elas abordarem um tópico *relacionado*, mencione-o brevemente, **citando as fontes com números sobrescritos** e listando-as no rodapé.
+                * Se as fontes não responderem a pergunta, diga educadamente que não encontrou informações específicas nos documentos consultados.
                 
                 ---
-                FONTES DISPONÍVEIS PARA CONSULTA:
+                DADOS DE CONTEXTO (Use para compor a resposta):
                 %s
                 ---
                 %s
                 ---
                 
-                **PERGUNTA DO USUÁRIOS:**
+                **PERGUNTA DO USUÁRIO:**
                 %s
                 
-                **RESPOSTA:**
-                (Elabore sua resposta. Adicione números sobrescritos ¹, ², ³... após as informações chave. No final, crie a seção "Fontes Consultadas" listando cada número e sua FONTE INTACTA correspondente do "MAPA DE FONTES".)
+                **RESPOSTA (Texto corrido com citações sobrescritas, SEM lista final):**
                 """, context.toString(), sourceMapping.toString(), question);
     }
 

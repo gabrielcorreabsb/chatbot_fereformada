@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/v1/chat")
+@RequestMapping("/api/chat")
 public class ChatController {
 
     private final QueryService queryService;

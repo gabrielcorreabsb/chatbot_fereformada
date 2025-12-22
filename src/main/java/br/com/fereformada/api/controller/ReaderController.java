@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @RestController
-@RequestMapping("/api/v1/leitor")
+@RequestMapping("/api/leitor")
 public class ReaderController {
 
     private final ContentChunkRepository contentChunkRepository;
